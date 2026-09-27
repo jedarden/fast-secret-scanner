@@ -1,0 +1,15 @@
+dimension	value	count
+rule	curl-auth-header	100
+rule	curl-auth-user	3
+rule	generic-api-key	52
+rule	kubernetes-secret-yaml	1
+rule	private-key	2
+rule	stripe-access-token	2
+extension	.md	154
+extension	.txt	2
+extension	.yaml	3
+extension	.yml	1
+total	raw_findings	160
+total	unique_path_line_rule	159
+total	unique_files	52
+total	history_commits_with_findings	18

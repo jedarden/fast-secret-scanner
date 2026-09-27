@@ -1,0 +1,8 @@
+gitleaks_rule	rust_covered_unique_locations	gitleaks_unique_locations
+curl-auth-header	100	100
+curl-auth-user	3	3
+generic-api-key	28	51
+kubernetes-secret-yaml	1	1
+private-key	2	2
+stripe-access-token	2	2
+TOTAL	136	159
