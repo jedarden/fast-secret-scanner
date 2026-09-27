@@ -21,7 +21,7 @@ git add path/to/change
 ```
 
 The host used for this repository redirects Cargo's target directory to
-`/build/secret-scanner`; a normal Cargo installation uses `./target`.
+`/build/fast-secret-scanner`; a normal Cargo installation uses `./target`.
 
 The default command scans only lines added to the Git index. Output never
 includes the matching value:

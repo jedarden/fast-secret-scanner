@@ -13,9 +13,15 @@ replacement.
 - `research/`: benchmark data, coverage evidence, and rule boundaries.
 - `notes/`: objective and architecture decisions.
 - `scripts/benchmark.sh`: repeatable staged-scan comparison with Gitleaks.
+- `plan.md`: current delivery plan and acceptance checks.
+- `.beads/`: bead-rs work tracking; `.needle.yaml` declares the backend.
 
 Read `README.md` for the user contract, `notes/design.md` before changing the
 data path, and `research/rule-coverage.md` before changing a detector.
+
+Repository changes require an owning bead. Use the `bead` CLI, record affected
+paths and verification evidence, and run `bead sync flush-only` after every
+mutation so the tracked checkpoint stays current.
 
 ## Safety invariants
 
@@ -41,9 +47,9 @@ cargo build --release
 ./scripts/benchmark.sh
 ```
 
-Cargo output must remain in `/build/secret-scanner`, as enforced by the host
-wrapper. Benchmark output containing machine-specific load data belongs under
-`research/` only when intentionally recorded.
+Cargo output must remain in `/build/fast-secret-scanner`, as enforced by the
+host wrapper. Benchmark output containing machine-specific load data belongs
+under `research/` only when intentionally recorded.
 
 For documentation-only changes, `git diff --check` and both repository scanners
 are sufficient. For Rust changes, run formatting, Clippy, and the complete test
