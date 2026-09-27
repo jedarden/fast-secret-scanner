@@ -48,7 +48,7 @@ is dramatized.
 - [x] Updated `assets/benchmark.gif` referenced by the README.
 - [x] Contact-sheet review of setup, launch, first finish, second finish, and
       final hold.
-- [ ] Secret scans, formatting checks, bead checkpoint, commit, and Forgejo
+- [x] Secret scans, formatting checks, bead checkpoint, commit, and Forgejo
       push with GitHub mirror verification.
 
 ## Acceptance checks
