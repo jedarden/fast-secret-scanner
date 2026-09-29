@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Shared Git hook dispatcher: fast Rust scan, preserved repository hooks,
+# then the existing fleet Gitleaks dispatcher.
+set -u
+
+hook="$(basename "$0")"
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+rust="${SECRET_SCANNER_BIN:-$HOME/.local/bin/secret-scanner}"
+
+if [ "$hook" = pre-commit ]; then
+  if [ ! -x "$rust" ]; then
+    echo 'secret-scanner: runtime unavailable; commit blocked' >&2
+    exit 1
+  fi
+  report="$(mktemp)" || exit 1
+  trap 'rm -f -- "$report"' EXIT
+  (cd "$root" && "$rust" --staged) >"$report" 2>/dev/null
+  result=$?
+  case "$result" in
+    0) ;;
+    1)
+      echo 'secret-scanner: possible secret in staged changes:' >&2
+      sed -n '1,20p' "$report" >&2
+      echo 'secret-scanner: remove the candidate, rotate it if live, then restage' >&2
+      exit 1
+      ;;
+    *)
+      echo 'secret-scanner: execution failed; commit blocked' >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# Local overrides saved by install-git-hooks.py. These are worktree-relative
+# when Git stored a relative core.hooksPath. Preserve the original hook first.
+previous="$(git config --local --get secretScanner.previousHooksPath 2>/dev/null || true)"
+if [ -n "$previous" ]; then
+  case "$previous" in
+    /*) previous_hook="$previous/$hook" ;;
+    *) previous_hook="$root/$previous/$hook" ;;
+  esac
+  if [ -x "$previous_hook" ] && [ "$(readlink -f "$previous_hook")" != "$(readlink -f "$0")" ]; then
+    "$previous_hook" "$@" || exit $?
+  fi
+fi
+
+delegate="$(git config --global --get secretScanner.delegateHooksPath 2>/dev/null || true)"
+if [ -n "$delegate" ] && [ -x "$delegate/$hook" ]; then
+  exec "$delegate/$hook" "$@"
+fi
+exit 0

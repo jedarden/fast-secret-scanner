@@ -8,6 +8,8 @@ replacement.
 
 - `src/detector.rs`: byte-oriented rules and detector unit tests.
 - `src/git.rs`: staged-patch acquisition and parsing.
+- `hooks/`: Git and coding-agent hook adapters.
+- `scripts/install-agent-hooks.py`, `scripts/install-git-hooks.py`: scoped fleet installation.
 - `src/main.rs`: CLI arguments, scan modes, output, and exit codes.
 - `tests/cli.rs`: process-level behavior and redaction checks.
 - `research/`: benchmark data, coverage evidence, and rule boundaries.
@@ -32,6 +34,8 @@ mutation so the tracked checkpoint stays current.
   to a tracked fixture.
 - Keep the default scan surface to staged additions. Any broader mode must be
   explicit.
+- Server patch input is trusted only when produced by Git over novel commits;
+  retain the comprehensive Forgejo Gitleaks gate.
 - Coverage may be narrower than Gitleaks, but changes must not silently remove
   an existing rule. Update `research/rule-coverage.md` when coverage changes.
 

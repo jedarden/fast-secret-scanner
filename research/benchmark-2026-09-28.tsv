@@ -1,0 +1,10 @@
+case	runs	median_ms	mean_ms	min_ms	max_ms
+git_diff	15	4	3.9	3	5
+secret_scanner_0.2.0	15	5	4.7	3	6
+gitleaks_8.30.1_staged_decode0	15	530	538.0	382	679
+
+# UTC measurement: 2026-09-29T03:48:31Z (local 2026-09-28)
+# Same 221-byte staged patch containing one synthetic candidate; 200-line baseline.
+# Command: RUNS=15 FIXTURE_LINES=200 ADDED_LINES=1 GITLEAKS_BIN=<pinned 8.30.1> ./scripts/benchmark.sh
+# Scanner GNU release SHA-256: 44b821608568fb2e427e4fc002af14eb9349c222202d55f96e6f98ecb1d4c9a9
+# Host load average: 22.58 22.53 29.17. Medians reflect this host, not a universal ratio.

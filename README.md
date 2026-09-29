@@ -1,6 +1,7 @@
 # secret-scanner
 
-A low-latency Rust tripwire for common secrets in staged Git changes.
+A low-latency Rust tripwire for common secrets in staged changes, coding-agent
+worktrees, and novel commits at a Git server.
 
 ![Measured staged-scan comparison: secret-scanner versus Gitleaks](assets/benchmark.gif)
 
@@ -42,6 +43,12 @@ path/to/file:42:github-token
 # Scan staged additions (recommended local gate).
 secret-scanner
 
+# Scan staged and unstaged additions plus untracked files before an agent stops.
+secret-scanner --worktree
+
+# Scan an added-line patch from Git history in a server hook.
+git log --format= --patch --no-renames --unified=0 -1 HEAD | secret-scanner --patch-stdin
+
 # Scan every tracked file.
 secret-scanner --tracked --summary
 
@@ -58,6 +65,10 @@ Minimal `.git/hooks/pre-commit`:
 #!/bin/sh
 exec /absolute/path/to/secret-scanner
 ```
+
+For this machine's fleet installation, use the [deployment guide](docs/deploy-fleet.md).
+For Codex and Claude Code, use the [agent hook guide](docs/agent-hooks.md).
+The pinned static Linux build is in [`dist/`](dist/README.md).
 
 ## What it detects
 
@@ -88,6 +99,10 @@ own machine. The raw data is in
 method and Gitleaks comparison are in
 [`research/gitleaks-performance.md`](research/gitleaks-performance.md).
 
+A fresh 0.2.0 check on a 221-byte staged patch measured 5 ms for Rust and
+530 ms for pinned Gitleaks 8.30.1 (15-run medians on this loaded host). See
+[`research/benchmark-2026-09-28.tsv`](research/benchmark-2026-09-28.tsv).
+
 Against the redacted research corpus, this scanner covered 136 of 159 unique
 Gitleaks locations (85.5%). The 23 misses were all from Gitleaks' broad generic
 rule. This is evidence about that corpus, not a general recall estimate.
@@ -106,6 +121,8 @@ rule. This is evidence about that corpus, not a general recall estimate.
 |---|---|
 | Evaluating the security tradeoff | [`notes/OBJECTIVE.md`](notes/OBJECTIVE.md) |
 | Integrating or changing the scanner | [`AGENTS.md`](AGENTS.md) |
+| Installing across Git and agent runtimes | [`docs/deploy-fleet.md`](docs/deploy-fleet.md) |
+| Agent hook behavior | [`docs/agent-hooks.md`](docs/agent-hooks.md) |
 | Understanding the implementation | [`notes/design.md`](notes/design.md) |
 | Auditing rules and known gaps | [`research/rule-coverage.md`](research/rule-coverage.md) |
 | Reproducing performance claims | [`research/gitleaks-performance.md`](research/gitleaks-performance.md) |
