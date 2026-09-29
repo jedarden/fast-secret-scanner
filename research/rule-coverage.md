@@ -49,3 +49,9 @@ positive and negative tests and benchmark the staged path.
 
 These gaps are acceptable for the latency objective only because an
 authoritative Gitleaks commit-range scan remains required.
+# Generic assignment boundary
+
+The generic rule does not treat hyphenated file names in notes as credential
+keys. For example, a path with a `secret-` prefix followed by a comma and
+another file name is not a credential assignment. Plain `secret = value` and
+credential-like identifiers remain covered.

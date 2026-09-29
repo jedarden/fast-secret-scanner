@@ -7,4 +7,4 @@ mod detector;
 mod git;
 
 pub use detector::{Finding, Scanner};
-pub use git::{scan_staged, scan_staged_patch};
+pub use git::{scan_staged, scan_staged_patch, scan_worktree};

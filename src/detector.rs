@@ -487,6 +487,13 @@ fn detect_generic_assignment(line: &[u8], rules: &mut Vec<&'static str>) {
         let mut search_from = 0;
         while let Some(relative) = find_ascii_case_insensitive(&line[search_from..], keyword) {
             let keyword_end = search_from + relative + keyword.len();
+            // A path such as "secret-scan.md, research/report-2026.tsv" is not
+            // an assignment. Do not let punctuation later in prose turn a
+            // hyphenated filename into a credential key.
+            if matches!(line.get(keyword_end), Some(b'-' | b'.' | b'/')) {
+                search_from = keyword_end;
+                continue;
+            }
             let tail_end = line.len().min(keyword_end + 32);
             let tail = &line[keyword_end..tail_end];
             let Some(operator) = tail
@@ -895,5 +902,12 @@ mod tests {
             "api_key = your_api_key_here\npassword = changeme12345\napi_token = {candidate} # secret-scanner:allow\n"
         );
         assert!(rules_for(&content).is_empty());
+    }
+
+    #[test]
+    fn does_not_treat_hyphenated_paths_in_notes_as_assignments() {
+        let note = "Affected paths: secret-scan.md, research/worktree-benchmark-2026-09-28.tsv";
+        assert!(rules_for(note).is_empty());
+        assert!(rules_for(&format!("secret = {}", synthetic())).contains("generic-api-key"));
     }
 }

@@ -1,0 +1,3 @@
+mode	median_ms	p95_ms	runs	notes
+staged	2.7	5.1	30	Rust musl release binary; scanner repository; no staged additions
+worktree	13.8	17.6	30	Rust musl release binary; current tracked changes and untracked documentation

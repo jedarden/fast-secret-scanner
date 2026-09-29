@@ -152,3 +152,42 @@ editing the same scanner or hook surfaces.
 - Hook definitions are tested from a repository subdirectory.
 - Gitleaks remains documented and tested as the authoritative pushed-range
   gate.
+
+## Phase 3 — Fleet protection for `jedarden/*`
+
+Decision: [ADR 0001](docs/adr/0001-fleet-secret-scan.md).
+
+The completion condition is a verified Forgejo pre-receive hook on every
+`jedarden/*` repository, including private repositories and future new repos;
+the workstation and agent hooks are early-feedback layers. The server gate
+must reject novel commits before refs move, even when a contributor bypasses
+local hooks. The existing pinned Gitleaks scan remains in the gate.
+
+| Order | Bead | Scope |
+|---:|---|---|
+| 1 | `fss-cb646d6c` | Incremental worktree scan |
+| 2 | `fss-3ae356e3` | Added-line scan from novel-commit patch stream |
+| 3 | `fss-3d6f65a2` | Pinned binary and fleet Git pre-commit installation, including local overrides |
+| 4 | `fss-3aa3e0b6` | GitOps runtime and Forgejo pre-receive rollout |
+| 5 | `fss-5f007601` | Full owner inventory, canary, and fleet audit |
+
+### Required acceptance
+
+- Rust scans additions in each novel commit, with no matched text in any
+  output. Scanner failures and timeouts reject a push.
+- A checksum-verified, pinned Linux binary is present on Forgejo's data PVC
+  before the server hook begins calling it. The relevant ArgoCD Application is
+  Synced and Healthy after the GitOps change.
+- Local Git pre-commit runs Rust first, then the existing Gitleaks policy. The
+  four known `core.hooksPath` overrides preserve their existing hooks and run
+  Rust. The installer audits newly discovered overrides.
+- Codex and Claude Code user-level hooks run after edits, before commit
+  attempts, and at Stop. Hook trust and bypass limits are documented.
+- Enumerate every repository owned by `jedarden` through Forgejo pagination;
+  compare every live hook to the canonical version. Install or update fleet
+  hooks, never overwrite an unrecognized custom hook without preserving its
+  behavior. Protect newly created repositories through a repeatable
+  reconciliation path.
+- Canary a synthetic secret push and verify rejection before fleet rollout;
+  verify a clean push and a complete post-rollout inventory. Record command,
+  count, exceptions, and outcome without recording candidate values.

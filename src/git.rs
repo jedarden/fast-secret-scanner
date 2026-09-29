@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::detector::{Scanner, StagedFileState};
@@ -10,21 +12,52 @@ use crate::detector::{Scanner, StagedFileState};
 ///
 /// Returns an I/O error when Git cannot be executed or the staged diff fails.
 pub fn scan_staged(scanner: &mut Scanner) -> io::Result<()> {
+    scan_diff(scanner, &["--cached"])
+}
+
+/// Scan staged and unstaged additions, plus complete untracked regular files.
+/// The index and working tree are never modified.
+///
+/// # Errors
+///
+/// Returns an I/O error when Git or a selected untracked file cannot be read.
+pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
+    scan_staged(scanner)?;
+    scan_diff(scanner, &[])?;
     let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("git ls-files --others failed"));
+    }
+    for raw_path in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|p| !p.is_empty())
+    {
+        let path = PathBuf::from(String::from_utf8_lossy(raw_path).as_ref());
+        if fs::symlink_metadata(&path)?.file_type().is_file() {
+            scanner.scan_path(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn scan_diff(scanner: &mut Scanner, extra: &[&str]) -> io::Result<()> {
+    let output = Command::new("git")
+        .args(["-c", "core.quotePath=false", "diff"])
+        .args(extra)
         .args([
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "--cached",
             "--no-color",
             "--no-ext-diff",
+            "--no-renames",
             "--unified=0",
             "--diff-filter=ACMR",
             "--",
         ])
         .output()?;
     if !output.status.success() {
-        return Err(io::Error::other("git diff --cached failed"));
+        return Err(io::Error::other("git diff failed"));
     }
     scan_staged_patch(scanner, &output.stdout);
     Ok(())
@@ -47,6 +80,7 @@ pub fn scan_staged_patch(scanner: &mut Scanner, patch: &[u8]) {
         if raw_line.starts_with(b"diff --git ") {
             current_path = None;
             new_line = 0;
+            states.clear();
             continue;
         }
         if new_line == 0 {
@@ -72,6 +106,9 @@ fn parse_new_path(raw_path: &[u8]) -> Option<String> {
     if raw_path == b"/dev/null" {
         return None;
     }
+    // Git appends a tab after path headers containing spaces. It is a header
+    // separator, not part of the path used for finding locations.
+    let raw_path = raw_path.strip_suffix(b"\t").unwrap_or(raw_path);
     let raw_path = raw_path.strip_prefix(b"b/").unwrap_or(raw_path);
     Some(String::from_utf8_lossy(raw_path).into_owned())
 }

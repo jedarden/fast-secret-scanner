@@ -3,7 +3,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use secret_scanner::{Scanner, scan_staged};
+use secret_scanner::{Scanner, scan_staged, scan_staged_patch, scan_worktree};
 
 const USAGE: &str = "\
 Usage: secret-scanner [OPTIONS] [PATH ...]
@@ -12,6 +12,8 @@ With no paths, scans only lines added to the Git index.
 
 Options:
   --staged          scan staged additions (default)
+  --worktree        scan staged and unstaged additions plus untracked files
+  --patch-stdin     scan added lines in a Git patch from standard input
   --tracked         scan all currently tracked files
   --stdin           scan standard input
   --path-label PATH label standard input findings with PATH
@@ -25,6 +27,8 @@ Options:
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Mode {
     Staged,
+    Worktree,
+    PatchStdin,
     Tracked,
     Stdin,
     Paths,
@@ -63,6 +67,14 @@ fn run() -> Result<bool, String> {
 
     match options.mode {
         Mode::Staged => scan_staged(&mut scanner).map_err(|error| error.to_string())?,
+        Mode::Worktree => scan_worktree(&mut scanner).map_err(|error| error.to_string())?,
+        Mode::PatchStdin => {
+            let mut patch = Vec::new();
+            io::stdin()
+                .read_to_end(&mut patch)
+                .map_err(|error| error.to_string())?;
+            scan_staged_patch(&mut scanner, &patch);
+        }
         Mode::Tracked => scanner.scan_tracked().map_err(|error| error.to_string())?,
         Mode::Stdin => {
             let mut content = Vec::new();
@@ -116,6 +128,8 @@ fn parse_options() -> Result<Option<Options>, String> {
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--staged" => mode = Mode::Staged,
+            "--worktree" => mode = Mode::Worktree,
+            "--patch-stdin" => mode = Mode::PatchStdin,
             "--tracked" => mode = Mode::Tracked,
             "--stdin" => mode = Mode::Stdin,
             "--quiet" => quiet = true,

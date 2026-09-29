@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -45,6 +46,110 @@ fn staged_cli_rejects_without_printing_the_value() {
     assert!(!stdout.contains(&candidate));
 
     fs::remove_dir_all(&repository).expect("remove exact temporary repository");
+}
+
+#[test]
+fn worktree_catches_staged_unstaged_and_untracked_candidates() {
+    let repository = temporary_repository("worktree");
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "core.hooksPath", "hooks"]);
+    git(&repository, &["config", "user.name", "scanner-test"]);
+    git(
+        &repository,
+        &["config", "user.email", "scanner-test@example.invalid"],
+    );
+    fs::create_dir(repository.join("hooks")).expect("hooks directory");
+    fs::write(repository.join("staged file.txt"), "clean\n").expect("baseline");
+    git(&repository, &["add", "staged file.txt"]);
+    git(&repository, &["commit", "-q", "-m", "baseline"]);
+
+    let candidate = candidate();
+    fs::write(
+        repository.join("staged file.txt"),
+        format!("clean\napi_key = {candidate}\n"),
+    )
+    .expect("staged candidate");
+    git(&repository, &["add", "staged file.txt"]);
+    fs::write(
+        repository.join("staged file.txt"),
+        "clean\napi_key = removed\n",
+    )
+    .expect("unstaged removal");
+    fs::write(
+        repository.join("untracked file.txt"),
+        format!("api_key = {candidate}\n"),
+    )
+    .expect("untracked candidate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--worktree")
+        .current_dir(&repository)
+        .output()
+        .expect("execute worktree scanner");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert!(stdout.contains("staged file.txt:2:generic-api-key"));
+    assert!(stdout.contains("untracked file.txt:1:generic-api-key"));
+    assert!(!stdout.contains(&candidate));
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
+#[test]
+fn worktree_covers_unborn_repo_and_patch_stdin_covers_commit_patch() {
+    let repository = temporary_repository("unborn");
+    git(&repository, &["init", "-q"]);
+    let candidate = candidate();
+    fs::write(
+        repository.join("new.txt"),
+        format!("service_api_token = {candidate}\n"),
+    )
+    .expect("untracked candidate");
+    let output = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--worktree")
+        .current_dir(&repository)
+        .output()
+        .expect("scan unborn repository");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("new.txt:1:generic-api-key"));
+
+    let patch = format!(
+        "diff --git a/new.txt b/new.txt\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+service_api_token = {candidate}\n"
+    );
+    let mut process = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--patch-stdin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn patch scanner");
+    process
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(patch.as_bytes())
+        .expect("write synthetic patch");
+    let output = process.wait_with_output().expect("wait for patch scanner");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("new.txt:1:generic-api-key"));
+    assert!(!stdout.contains(&candidate));
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
+fn temporary_repository(label: &str) -> std::path::PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after Unix epoch")
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "secret-scanner-{label}-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&repository).expect("create temporary repository");
+    repository
+}
+
+fn candidate() -> String {
+    ["A7bQ9xL2", "mN4pR8sT", "3vW6yZ1c", "D5fG0hJk"].concat()
 }
 
 fn git(repository: &Path, arguments: &[&str]) {
