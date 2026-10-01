@@ -13,6 +13,9 @@ Git index
 
 The scanner does not request complete staged blobs. That saves subprocesses and
 prevents unchanged historical examples from blocking an unrelated commit.
+Git rename detection is enabled for staged and worktree diffs: a renamed
+content-addressed checkpoint object contributes only its changed lines, while
+new records in that object and entirely new files remain scan inputs.
 
 ## Detector strategy
 

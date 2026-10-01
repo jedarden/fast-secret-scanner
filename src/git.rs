@@ -50,7 +50,7 @@ fn scan_diff(scanner: &mut Scanner, extra: &[&str]) -> io::Result<()> {
         .args([
             "--no-color",
             "--no-ext-diff",
-            "--no-renames",
+            "--find-renames",
             "--unified=0",
             "--diff-filter=ACMR",
             "--",

@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -92,6 +93,62 @@ fn worktree_catches_staged_unstaged_and_untracked_candidates() {
     assert!(stdout.contains("untracked file.txt:1:generic-api-key"));
     assert!(!stdout.contains(&candidate));
     fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
+#[test]
+fn staged_checkpoint_rename_scans_only_new_records() {
+    let repository = temporary_repository("checkpoint-rename");
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "core.hooksPath", "/dev/null"]);
+    git(&repository, &["config", "user.name", "scanner-test"]);
+    git(
+        &repository,
+        &["config", "user.email", "scanner-test@example.invalid"],
+    );
+    let directory = repository.join(".beads/checkpoint/objects");
+    fs::create_dir_all(&directory).expect("checkpoint directory");
+    let old = ".beads/checkpoint/objects/old.jsonl";
+    let new = ".beads/checkpoint/objects/new.jsonl";
+    let inherited = candidate();
+    let mut baseline = String::new();
+    for index in 0..20 {
+        writeln!(baseline, "record {index}: ordinary checkpoint text")
+            .expect("append baseline record");
+    }
+    writeln!(baseline, "api_key = {inherited}").expect("append inherited candidate");
+    fs::write(repository.join(old), baseline).expect("baseline checkpoint");
+    git(&repository, &["add", old]);
+    git(&repository, &["commit", "-q", "-m", "baseline", "--", old]);
+
+    git(&repository, &["mv", old, new]);
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(repository.join(new))
+        .expect("renamed checkpoint");
+    writeln!(file, "record 21: benign new event").expect("append benign event");
+    git(&repository, &["add", new]);
+    let clean = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .current_dir(&repository)
+        .output()
+        .expect("scan checkpoint rename");
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "unchanged records stay inherited"
+    );
+
+    let added = candidate();
+    writeln!(file, "service_api_token = {added}").expect("append synthetic secret");
+    git(&repository, &["add", new]);
+    let blocked = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .current_dir(&repository)
+        .output()
+        .expect("scan newly added record");
+    assert_eq!(blocked.status.code(), Some(1));
+    let stdout = String::from_utf8(blocked.stdout).expect("UTF-8 scanner output");
+    assert!(stdout.contains("new.jsonl:23:generic-api-key"));
+    assert!(!stdout.contains(&added));
+    fs::remove_dir_all(&repository).expect("remove temporary repository");
 }
 
 #[test]
