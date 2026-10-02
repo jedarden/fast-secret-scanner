@@ -19,9 +19,8 @@ The prior `0.2.0` artifact is retained for rollback.
 commit `3c5b885` (bead `fss-ea8be9a5`: `generic-api-key` no longer treats a
 URL scheme colon or a prose comma as an assignment). Its SHA-256 is
 `d366542c98a7bfb8b9173e2e760215b8bd80b45024b34c8d4a98dcc78a7c1bcd`.
-It is installed as `~/.local/bin/secret-scanner` on codinghome. The Forgejo
-GitOps init script still pins `0.2.1`; repin it there deliberately, with this
-digest, when the server gate should pick the change up.
+It was installed as `~/.local/bin/secret-scanner` on codinghome. At that
+release, the Forgejo GitOps init script remained pinned to `0.2.1`.
 
 ## 0.2.3 (scanner hardening and file-write hooks)
 
@@ -30,5 +29,7 @@ parser fix, redacted path output, explicit incomplete-scan status, the
 high-signal `_key` rule, and file-write hook support. It is built with the
 same static target command. Its SHA-256 is
 `7fbd15df571f29489ff733acb96aa7ac65d4ba957cc25d4ff71816c517a3a62d`.
-The Forgejo GitOps pin must name the commit containing this artifact and this
-digest; the server retains pinned Gitleaks as the comprehensive gate.
+The Forgejo GitOps pin names source commit
+`555871ec0f77f6687379bab73dd80ecde72cb05f` and this digest in
+`declarative-config` commit `382bb6c5aa03ac9147ddf8ba839321a78674b63e`.
+The server retains pinned Gitleaks 8.30.1 as the comprehensive gate.
