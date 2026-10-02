@@ -36,9 +36,12 @@ rules.
 
 ## Redaction invariant
 
-Detection functions return stable rule IDs only. They do not return match
-ranges or candidate strings, which makes accidental secret logging harder.
-CLI output escapes control characters in paths and prints no source line.
+Detection functions return a stable rule ID and a borrowed slice of the
+current source line. The slice is used only to decide whether an untrusted path
+or input label must be replaced with `<redacted-path>`; it is never retained in
+a finding, log, or report. Known provider shapes in a path also trigger the
+replacement. CLI output escapes control characters in safe paths and prints
+no source line.
 
 ## Known parser boundary
 

@@ -77,6 +77,25 @@ mod unix {
             .expect("clean commit");
         assert!(clean.status.success());
         assert!(root.join("original-hook-ran").exists());
+
+        let sensitive_name = format!("fixture-{candidate}.txt");
+        fs::write(
+            root.join(&sensitive_name),
+            format!("api_key = {candidate}\n"),
+        )
+        .expect("synthetic candidate in filename");
+        git(&root, &["add", "--", &sensitive_name]);
+        let blocked = Command::new("git")
+            .args(["commit", "-q", "-m", "blocked filename"])
+            .current_dir(&root)
+            .env("SECRET_SCANNER_BIN", env!("CARGO_BIN_EXE_secret-scanner"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("blocked filename commit");
+        assert!(!blocked.status.success());
+        let stderr = String::from_utf8_lossy(&blocked.stderr);
+        assert!(stderr.contains("<redacted-path>:1:generic-api-key"));
+        assert!(!stderr.contains(&candidate));
         fs::remove_dir_all(&root).expect("remove exact test repository");
     }
 

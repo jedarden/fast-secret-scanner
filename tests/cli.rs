@@ -254,6 +254,63 @@ fn git_generated_header_like_added_line_cannot_hide_a_candidate() {
     fs::remove_dir_all(&repository).expect("remove test repository");
 }
 
+#[test]
+fn matched_value_in_filename_or_stdin_label_is_redacted() {
+    let repository = temporary_repository("path-redaction");
+    git(&repository, &["init", "-q"]);
+    let candidate = candidate();
+    let filename = format!("fixture-{candidate}.txt");
+    let content = format!("api_key = {candidate}\n");
+    fs::write(repository.join(&filename), &content).expect("write synthetic candidate");
+    git(&repository, &["add", "--", &filename]);
+
+    let staged = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .current_dir(&repository)
+        .output()
+        .expect("scan staged filename");
+    assert_eq!(staged.status.code(), Some(1));
+    let output = String::from_utf8(staged.stdout).expect("UTF-8 output");
+    assert!(output.contains("<redacted-path>:1:generic-api-key"));
+    assert!(!output.contains(&candidate));
+
+    let provider_shaped = ["ghp_", &candidate, "Z4rP"].concat();
+    let unrelated_name = format!("unrelated-{provider_shaped}.txt");
+    fs::write(repository.join(&unrelated_name), &content)
+        .expect("write candidate under sensitive-shaped filename");
+    git(&repository, &["add", "--", &unrelated_name]);
+    let staged = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .current_dir(&repository)
+        .output()
+        .expect("scan sensitive-shaped filename");
+    assert_eq!(staged.status.code(), Some(1));
+    assert!(
+        !staged
+            .stdout
+            .windows(provider_shaped.len())
+            .any(|part| part == provider_shaped.as_bytes())
+    );
+
+    let mut stdin = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--stdin", "--path-label", &filename])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("scan labeled stdin");
+    stdin
+        .stdin
+        .take()
+        .expect("stdin pipe")
+        .write_all(content.as_bytes())
+        .expect("write candidate");
+    let labeled = stdin.wait_with_output().expect("stdin result");
+    assert_eq!(labeled.status.code(), Some(1));
+    let output = String::from_utf8(labeled.stdout).expect("UTF-8 output");
+    assert!(output.contains("<redacted-path>:1:generic-api-key"));
+    assert!(!output.contains(&candidate));
+
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
 fn temporary_repository(label: &str) -> std::path::PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

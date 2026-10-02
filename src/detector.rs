@@ -24,6 +24,7 @@ struct FileState {
 pub struct Scanner {
     findings: Vec<Finding>,
     seen: HashSet<(String, usize, &'static str)>,
+    unsafe_paths: HashSet<String>,
     max_bytes: u64,
 }
 
@@ -39,6 +40,7 @@ impl Scanner {
         Self {
             findings: Vec::new(),
             seen: HashSet::new(),
+            unsafe_paths: HashSet::new(),
             max_bytes: DEFAULT_MAX_BYTES,
         }
     }
@@ -110,6 +112,12 @@ impl Scanner {
 
     #[must_use]
     pub fn findings(mut self) -> Vec<Finding> {
+        for finding in &mut self.findings {
+            if self.unsafe_paths.contains(&finding.path) {
+                finding.path.clear();
+                finding.path.push_str("<redacted-path>");
+            }
+        }
         self.findings.sort();
         self.findings
     }
@@ -170,21 +178,34 @@ impl Scanner {
             return;
         }
 
-        let mut rules = Vec::with_capacity(4);
+        let mut detections = Vec::with_capacity(4);
         let curl_context = state
             .curl_line
             .is_some_and(|curl_line| line_number.saturating_sub(curl_line) <= 5);
-        detect_provider_tokens(line, &mut rules);
-        detect_generic_assignment(line, &mut rules);
-        detect_authorization_header(line, curl_context, &mut rules);
-        detect_curl_user(line, curl_context, &mut rules);
-        detect_private_key(line, &mut rules);
-        detect_jwt(line, &mut rules);
-        detect_basic_auth_uri(line, &mut rules);
-        detect_kubernetes(line, line_number, state, &mut rules);
+        detect_provider_tokens(line, &mut detections);
+        detect_generic_assignment(line, &mut detections);
+        detect_authorization_header(line, curl_context, &mut detections);
+        detect_curl_user(line, curl_context, &mut detections);
+        detect_private_key(line, &mut detections);
+        detect_jwt(line, &mut detections);
+        detect_basic_auth_uri(line, &mut detections);
+        detect_kubernetes(line, line_number, state, &mut detections);
 
-        for rule in rules {
-            self.record(path, line_number, rule);
+        if !detections.is_empty() && path_has_secret_shape(path) {
+            self.unsafe_paths.insert(path.to_owned());
+        }
+        for detection in detections {
+            // A matched value can also occur in a filename or stdin label.
+            // Keep only a safety flag, never the value or a source-line copy.
+            if !detection.sensitive.is_empty()
+                && path
+                    .as_bytes()
+                    .windows(detection.sensitive.len())
+                    .any(|part| part == detection.sensitive)
+            {
+                self.unsafe_paths.insert(path.to_owned());
+            }
+            self.record(path, line_number, detection.rule);
         }
     }
 
@@ -198,6 +219,19 @@ impl Scanner {
             });
         }
     }
+}
+
+struct Detection<'a> {
+    rule: &'static str,
+    sensitive: &'a [u8],
+}
+
+fn path_has_secret_shape(path: &str) -> bool {
+    let mut detections = Vec::new();
+    detect_provider_tokens(path.as_bytes(), &mut detections);
+    detect_generic_assignment(path.as_bytes(), &mut detections);
+    detect_jwt(path.as_bytes(), &mut detections);
+    !detections.is_empty()
 }
 
 #[derive(Default)]
@@ -433,7 +467,7 @@ const GENERIC_KEYWORDS: &[&[u8]] = &[
     b"token",
 ];
 
-fn detect_provider_tokens(line: &[u8], rules: &mut Vec<&'static str>) {
+fn detect_provider_tokens<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
     for specification in PREFIX_RULES {
         for position in find_all(line, specification.prefix) {
             let start = position + specification.prefix.len();
@@ -448,7 +482,10 @@ fn detect_provider_tokens(line: &[u8], rules: &mut Vec<&'static str>) {
                 (specification.minimum..=specification.maximum).contains(&length)
             };
             if valid_length {
-                rules.push(specification.rule);
+                detections.push(Detection {
+                    rule: specification.rule,
+                    sensitive: &line[position..start + length],
+                });
                 break;
             }
         }
@@ -463,7 +500,10 @@ fn detect_provider_tokens(line: &[u8], rules: &mut Vec<&'static str>) {
                 .take_while(|byte| is_base64_url(**byte))
                 .count();
             if second >= 32 {
-                rules.push("sendgrid-api-key");
+                detections.push(Detection {
+                    rule: "sendgrid-api-key",
+                    sensitive: &line[position..position + 3 + first + 1 + second],
+                });
                 break;
             }
         }
@@ -476,13 +516,16 @@ fn detect_provider_tokens(line: &[u8], rules: &mut Vec<&'static str>) {
         }
         let length = rest.iter().take_while(|byte| is_base64_url(**byte)).count();
         if length >= 20 {
-            rules.push("openai-token");
+            detections.push(Detection {
+                rule: "openai-token",
+                sensitive: &line[position..position + 3 + length],
+            });
             break;
         }
     }
 }
 
-fn detect_generic_assignment(line: &[u8], rules: &mut Vec<&'static str>) {
+fn detect_generic_assignment<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
     for keyword in GENERIC_KEYWORDS {
         let mut search_from = 0;
         while let Some(relative) = find_ascii_case_insensitive(&line[search_from..], keyword) {
@@ -543,7 +586,10 @@ fn detect_generic_assignment(line: &[u8], rules: &mut Vec<&'static str>) {
                     && shannon_entropy(candidate) >= 3.5
                     && !contains_stopword(candidate)
                 {
-                    rules.push("generic-api-key");
+                    detections.push(Detection {
+                        rule: "generic-api-key",
+                        sensitive: candidate,
+                    });
                     return;
                 }
             }
@@ -552,7 +598,11 @@ fn detect_generic_assignment(line: &[u8], rules: &mut Vec<&'static str>) {
     }
 }
 
-fn detect_authorization_header(line: &[u8], curl_context: bool, rules: &mut Vec<&'static str>) {
+fn detect_authorization_header<'a>(
+    line: &'a [u8],
+    curl_context: bool,
+    detections: &mut Vec<Detection<'a>>,
+) {
     if let Some(position) = find_ascii_case_insensitive(line, b"authorization:") {
         let mut rest = trim_value_prefix(&line[position + b"authorization:".len()..]);
         for scheme in [b"bearer ".as_slice(), b"basic ", b"token ", b"api-token "] {
@@ -561,8 +611,11 @@ fn detect_authorization_header(line: &[u8], curl_context: bool, rules: &mut Vec<
                 break;
             }
         }
-        if header_value_is_secret(rest) {
-            rules.push("authorization-header");
+        if let Some(sensitive) = header_secret_value(rest) {
+            detections.push(Detection {
+                rule: "authorization-header",
+                sensitive,
+            });
             return;
         }
     }
@@ -579,27 +632,29 @@ fn detect_authorization_header(line: &[u8], curl_context: bool, rules: &mut Vec<
             && name
                 .get(name.len().saturating_sub(5)..)
                 .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b"token"));
-        if curl_context
-            && (api_key_name || token_name)
-            && header_value_is_secret(&line[colon + 1..])
-        {
-            rules.push("authorization-header");
-            return;
+        if curl_context && (api_key_name || token_name) {
+            if let Some(sensitive) = header_secret_value(&line[colon + 1..]) {
+                detections.push(Detection {
+                    rule: "authorization-header",
+                    sensitive,
+                });
+                return;
+            }
         }
     }
 }
 
-fn header_value_is_secret(value: &[u8]) -> bool {
+fn header_secret_value(value: &[u8]) -> Option<&[u8]> {
     let value = trim_value_prefix(value);
     let length = value
         .iter()
         .take(256)
         .take_while(|byte| is_generic_secret_byte(**byte))
         .count();
-    length >= 8 && shannon_entropy(&value[..length]) >= 2.75
+    (length >= 8 && shannon_entropy(&value[..length]) >= 2.75).then_some(&value[..length])
 }
 
-fn detect_curl_user(line: &[u8], curl_context: bool, rules: &mut Vec<&'static str>) {
+fn detect_curl_user<'a>(line: &'a [u8], curl_context: bool, detections: &mut Vec<Detection<'a>>) {
     if !curl_context {
         return;
     }
@@ -621,19 +676,26 @@ fn detect_curl_user(line: &[u8], curl_context: bool, rules: &mut Vec<&'static st
         && shannon_entropy(candidate) >= 2.0
         && !contains_stopword(candidate)
     {
-        rules.push("curl-auth-user");
+        let password_start = candidate.iter().position(|byte| *byte == b':').unwrap_or(0) + 1;
+        detections.push(Detection {
+            rule: "curl-auth-user",
+            sensitive: &candidate[password_start..],
+        });
     }
 }
 
-fn detect_private_key(line: &[u8], rules: &mut Vec<&'static str>) {
+fn detect_private_key<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
     if contains_ascii_case_insensitive(line, b"-----BEGIN")
         && contains_ascii_case_insensitive(line, b"PRIVATE KEY-----")
     {
-        rules.push("private-key");
+        detections.push(Detection {
+            rule: "private-key",
+            sensitive: line,
+        });
     }
 }
 
-fn detect_jwt(line: &[u8], rules: &mut Vec<&'static str>) {
+fn detect_jwt<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
     for position in find_all(line, b"eyJ") {
         let candidate = &line[position..];
         let length = candidate
@@ -646,13 +708,16 @@ fn detect_jwt(line: &[u8], rules: &mut Vec<&'static str>) {
             dots += usize::from(*byte == b'.');
         }
         if length >= 40 && dots == 2 {
-            rules.push("jwt");
+            detections.push(Detection {
+                rule: "jwt",
+                sensitive: &candidate[..length],
+            });
             break;
         }
     }
 }
 
-fn detect_basic_auth_uri(line: &[u8], rules: &mut Vec<&'static str>) {
+fn detect_basic_auth_uri<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
     let Some(scheme) = find_subslice(line, b"://") else {
         return;
     };
@@ -671,15 +736,18 @@ fn detect_basic_auth_uri(line: &[u8], rules: &mut Vec<&'static str>) {
     };
     let password = &credentials[colon + 1..];
     if password.len() >= 6 && shannon_entropy(password) >= 2.0 && !contains_stopword(password) {
-        rules.push("basic-auth-uri");
+        detections.push(Detection {
+            rule: "basic-auth-uri",
+            sensitive: password,
+        });
     }
 }
 
-fn detect_kubernetes(
-    line: &[u8],
+fn detect_kubernetes<'a>(
+    line: &'a [u8],
     line_number: usize,
     state: &mut FileState,
-    rules: &mut Vec<&'static str>,
+    detections: &mut Vec<Detection<'a>>,
 ) {
     if contains_ascii_case_insensitive(line, b"kind:")
         && contains_ascii_case_insensitive(line, b"secret")
@@ -694,22 +762,25 @@ fn detect_kubernetes(
         .kubernetes_kind
         .zip(state.kubernetes_data)
         .is_some_and(|(kind, data)| line_number.saturating_sub(kind.min(data)) <= 20);
-    if nearby && !state.kubernetes_reported && yaml_base64_value(line) {
-        rules.push("kubernetes-secret-yaml");
-        state.kubernetes_reported = true;
+    if nearby && !state.kubernetes_reported {
+        if let Some(sensitive) = yaml_base64_value(line) {
+            detections.push(Detection {
+                rule: "kubernetes-secret-yaml",
+                sensitive,
+            });
+            state.kubernetes_reported = true;
+        }
     }
 }
 
-fn yaml_base64_value(line: &[u8]) -> bool {
-    let Some(colon) = line.iter().position(|byte| *byte == b':') else {
-        return false;
-    };
+fn yaml_base64_value(line: &[u8]) -> Option<&[u8]> {
+    let colon = line.iter().position(|byte| *byte == b':')?;
     let value = trim_value_prefix(&line[colon + 1..]);
     let length = value
         .iter()
         .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
         .count();
-    length >= 10 && value[..length].iter().all(u8::is_ascii)
+    (length >= 10 && value[..length].iter().all(u8::is_ascii)).then_some(&value[..length])
 }
 
 fn alphabet_contains(alphabet: Alphabet, byte: u8) -> bool {

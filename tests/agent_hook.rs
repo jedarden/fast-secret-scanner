@@ -37,6 +37,18 @@ fn agent_hook_handles_findings_clean_errors_non_git_and_stop_loop() {
     assert!(output.contains("fixture.txt:1:generic-api-key"));
     assert!(!output.contains(&candidate));
 
+    let sensitive_name = format!("fixture-{candidate}.txt");
+    fs::write(
+        root.join(&sensitive_name),
+        format!("service_api_token = {candidate}\n"),
+    )
+    .expect("synthetic candidate in filename");
+    let post = event(&root, "PostToolUse", "", false);
+    let output = run_hook(&post, env!("CARGO_BIN_EXE_secret-scanner"));
+    assert!(output.contains("<redacted-path>:1:generic-api-key"));
+    assert!(!output.contains(&candidate));
+    fs::remove_file(root.join(sensitive_name)).expect("remove sensitive filename fixture");
+
     let read_only = event(&root, "PreToolUse", "git status --short", false);
     assert_eq!(run_hook(&read_only, "missing-scanner"), "{}");
 

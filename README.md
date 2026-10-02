@@ -31,6 +31,9 @@ includes the matching value:
 path/to/file:42:github-token
 ```
 
+If a filename or standard-input label contains a detected value or a known
+provider token shape, the path field becomes `<redacted-path>`.
+
 | Exit | Meaning | Next action |
 |---:|---|---|
 | `0` | No candidate found | Continue |
