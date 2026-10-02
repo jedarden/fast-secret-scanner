@@ -170,6 +170,7 @@ local hooks. The existing pinned Gitleaks scan remains in the gate.
 | 3 | `fss-3d6f65a2` | Pinned binary and fleet Git pre-commit installation, including local overrides |
 | 4 | `fss-3aa3e0b6` | GitOps runtime and Forgejo pre-receive rollout |
 | 5 | `fss-5f007601` | Full owner inventory, canary, and fleet audit |
+| 6 | `fss-44aec3bd` | Recurring new-repository reconciliation and documented first-push boundary |
 
 ### Required acceptance
 
@@ -191,3 +192,47 @@ local hooks. The existing pinned Gitleaks scan remains in the gate.
 - Canary a synthetic secret push and verify rejection before fleet rollout;
   verify a clean push and a complete post-rollout inventory. Record command,
   count, exceptions, and outcome without recording candidate values.
+- Run a recurring hook reconciliation and verify its first execution. A Git
+  template guard rejects a new repository's content push until the canonical
+  hook is installed; verify both sides of this lifecycle before fleet rollout.
+
+## Phase 4 — Scanner hardening and fleet redeployment
+
+First-push decision: [ADR 0002](docs/adr/0002-first-push-gate.md).
+
+The 0.2.1 review found two verified failures: a Git added line that looks like
+`+++ /dev/null` can hide later findings in that patch, and a matched value in a
+filename appears in redacted finding output. A byte limit can also turn an
+unscanned input into a clean exit. Fix these contracts before publishing a new
+binary. Keep the narrow fast detector and the pinned Gitleaks backstop.
+
+| Order | Bead | Outcome |
+|---:|---|---|
+| 1 | `fss-9e40f126` | Parse Git headers and hunks without confusing added content for metadata; reject malformed patches. |
+| 2 | `fss-c62fb72c` | Remove matched values from paths and every finding consumer. |
+| 3 | `fss-8ddb10b1` | Distinguish complete clean scans from skipped or oversized input. |
+| 4 | `fss-6b0c0b23` | Protect the first content push to a new Forgejo repository. |
+| 5 | `fss-cd2fa510` | Triage the 23 measured generic misses and admit only high-signal improvements. |
+| 6 | `fss-8ab567fa` | Verify immediate redacted scanning after file-write tool operations. |
+| 7 | `fss-b490c817` | Validate, publish, and redeploy the combined release across the fleet. |
+
+### Acceptance
+
+- A real Git patch with a header-like added line followed by a synthetic
+  candidate is rejected in staged, worktree, and server patch modes. Malformed
+  patch input never exits clean.
+- Finding output and agent feedback never contain a matched value, even when it
+  also appears in a filename or standard-input path label.
+- Oversized or truncated text input fails closed. Unsupported binary input has
+  a distinct status and proceeds to the pinned Gitleaks gate. Bounded input
+  preserves the latency goal.
+- New repositories receive the authoritative gate before their first content
+  ref is accepted. The recurring reconciler continues to audit later drift.
+- Codex and Claude file-write operations trigger the worktree scan immediately
+  after the write; representative event and live runtime checks prove the hook
+  actually runs. Hook feedback contains only redacted locations and rule IDs.
+- Measured useful recall improves only if false positives and staged latency
+  stay within the product objective. Document any retained coverage boundary.
+- Complete Rust, hook, GitOps, and live canary checks precede a pinned binary
+  release and full `jedarden/*` hook audit. Record commands, outcomes, target
+  ArgoCD Application, deployment commits, and exceptions on the owning beads.

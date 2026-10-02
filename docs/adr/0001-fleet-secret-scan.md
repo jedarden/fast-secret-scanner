@@ -25,7 +25,8 @@ pushes from other machines can bypass a workstation-only scanner.
    These provide remediation prompts, while the Git and Forgejo gates prevent
    a commit or pushed ref from containing a detected candidate.
 5. Reconcile every `jedarden/*` Forgejo pre-receive hook and audit exact hook
-   hashes. A scheduled reconciliation must cover repositories created later.
+   hashes. An always-on user timer reruns the authenticated reconciliation
+   every 15 minutes for repositories created later.
 
 ## Consequences
 
@@ -36,3 +37,9 @@ candidate may already exist in a local uncommitted file, so remediation must
 remove and rotate any live credential. The hook prints no candidate values.
 Unrecognized repository-specific pre-receive hooks require composition rather
 than replacement.
+
+The timer cannot guard the initial push-to-create transaction: the repository
+does not exist when the client begins that push. ADR 0002 adds a Git-template
+guard at repository initialization. It rejects a first content push until the
+canonical API-managed hook is installed. The timer remains responsible for
+installing that hook and auditing later drift.

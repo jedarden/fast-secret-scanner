@@ -40,12 +40,42 @@ Missing binary, nonzero execution status, or timeout rejects the push.
 
 Deployment source is `declarative-config`:
 
-- `k8s/iad-ci/forgejo/forgejo-application.yml`: binary pin, checksum, install.
+- `k8s/iad-ci/forgejo/forgejo-application.yml`: binary pin, checksum, install,
+  and first-push Git template guard.
 - `tools/forgejo-secret-scan/pre-receive`: novel-commit Rust invocation.
 - `tools/forgejo-secret-scan/rollout.sh`: owner inventory and exact hook audit.
+- `tools/forgejo-secret-scan/test-first-push-guard.sh`: local bare-Git creation test.
 
 After the GitOps Application is Synced and Healthy, canary a synthetic blocked
 push and a clean push. Then run `rollout.sh --apply` and a final dry run. Review
 every skipped custom hook and compose it with the canonical guard. The audit
 must enumerate private as well as public repositories. Reconcile again after
 new repositories are created.
+
+On the always-on workstation that owns the Forgejo credential helper, install
+the checked-in user timer after `declarative-config` is checked out at
+`~/declarative-config`:
+
+```bash
+install -Dm644 deploy/systemd/secret-scanner-reconcile.service \
+  ~/.config/systemd/user/secret-scanner-reconcile.service
+install -Dm644 deploy/systemd/secret-scanner-reconcile.timer \
+  ~/.config/systemd/user/secret-scanner-reconcile.timer
+systemctl --user daemon-reload
+systemctl --user enable --now secret-scanner-reconcile.timer
+systemctl --user start secret-scanner-reconcile.service
+systemctl --user status secret-scanner-reconcile.service
+```
+
+The timer reapplies and verifies the canonical hook every 15 minutes; its
+first run should exit successfully before relying on it. `rollout.sh` skips
+unrecognized custom hooks and fails when an API request or hash check fails.
+Review failures with `journalctl --user -u secret-scanner-reconcile.service`.
+The timer is eventual reconciliation. Forgejo's Git template adds a
+creation-time guard that rejects a new repository's content push until the
+canonical hook exists. A push-to-create attempt may leave an empty repository;
+retry after the next successful timer run, or run
+`rollout.sh --apply --only jedarden/NAME` to install it sooner. Verify the
+running Forgejo container has `GIT_TEMPLATE_DIR` and canary both a rejected
+first push and a clean push after installation. This guard affects new repos;
+the complete existing-repo inventory remains a required rollout check.
