@@ -22,3 +22,13 @@ URL scheme colon or a prose comma as an assignment). Its SHA-256 is
 It is installed as `~/.local/bin/secret-scanner` on codinghome. The Forgejo
 GitOps init script still pins `0.2.1`; repin it there deliberately, with this
 digest, when the server gate should pick the change up.
+
+## 0.2.3 (scanner hardening and file-write hooks)
+
+`secret-scanner-v0.2.3-x86_64-unknown-linux-musl` includes the staged-patch
+parser fix, redacted path output, explicit incomplete-scan status, the
+high-signal `_key` rule, and file-write hook support. It is built with the
+same static target command. Its SHA-256 is
+`7fbd15df571f29489ff733acb96aa7ac65d4ba957cc25d4ff71816c517a3a62d`.
+The Forgejo GitOps pin must name the commit containing this artifact and this
+digest; the server retains pinned Gitleaks as the comprehensive gate.
