@@ -16,6 +16,10 @@ prevents unchanged historical examples from blocking an unrelated commit.
 Git rename detection is enabled for staged and worktree diffs: a renamed
 content-addressed checkpoint object contributes only its changed lines, while
 new records in that object and entirely new files remain scan inputs.
+Patch parsing tracks file headers and hunk line counts. A `+++ ` byte sequence
+inside an added line remains file content, so it cannot change the active path
+or hide following additions. Inconsistent or truncated patch input returns an
+execution error instead of a clean result.
 
 ## Detector strategy
 

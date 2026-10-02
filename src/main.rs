@@ -73,7 +73,7 @@ fn run() -> Result<bool, String> {
             io::stdin()
                 .read_to_end(&mut patch)
                 .map_err(|error| error.to_string())?;
-            scan_staged_patch(&mut scanner, &patch);
+            scan_staged_patch(&mut scanner, &patch).map_err(|error| error.to_string())?;
         }
         Mode::Tracked => scanner.scan_tracked().map_err(|error| error.to_string())?,
         Mode::Stdin => {

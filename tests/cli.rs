@@ -192,6 +192,68 @@ fn worktree_covers_unborn_repo_and_patch_stdin_covers_commit_patch() {
     fs::remove_dir_all(&repository).expect("remove test repository");
 }
 
+#[test]
+fn git_generated_header_like_added_line_cannot_hide_a_candidate() {
+    let repository = temporary_repository("header-like-added-line");
+    git(&repository, &["init", "-q"]);
+    let candidate = candidate();
+    fs::write(
+        repository.join("fixture.txt"),
+        format!("++ /dev/null\napi_key = {candidate}\n"),
+    )
+    .expect("write header-like added line");
+    git(&repository, &["add", "fixture.txt"]);
+
+    for mode in [None, Some("--worktree")] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_secret-scanner"));
+        if let Some(mode) = mode {
+            command.arg(mode);
+        }
+        let output = command
+            .current_dir(&repository)
+            .output()
+            .expect("scan Git additions");
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("fixture.txt:2:generic-api-key"));
+        assert!(
+            !output
+                .stdout
+                .windows(candidate.len())
+                .any(|part| part == candidate.as_bytes())
+        );
+    }
+
+    let patch = Command::new("git")
+        .args(["diff", "--cached", "--unified=0", "--", "fixture.txt"])
+        .current_dir(&repository)
+        .output()
+        .expect("generate real Git patch")
+        .stdout;
+    let mut scanner = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--patch-stdin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("scan patch");
+    scanner
+        .stdin
+        .take()
+        .expect("scanner stdin")
+        .write_all(&patch)
+        .expect("write patch");
+    let output = scanner.wait_with_output().expect("patch scan result");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("fixture.txt:2:generic-api-key"));
+    assert!(
+        !output
+            .stdout
+            .windows(candidate.len())
+            .any(|part| part == candidate.as_bytes())
+    );
+
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
 fn temporary_repository(label: &str) -> std::path::PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
