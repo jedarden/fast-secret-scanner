@@ -500,6 +500,9 @@ const GENERIC_KEYWORDS: &[&[u8]] = &[
     b"private_key",
     b"secret",
     b"token",
+    // A standalone _KEY suffix covers service-specific key names without
+    // treating every use of the English word "key" as an assignment.
+    b"_key",
 ];
 
 fn detect_provider_tokens<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
@@ -565,6 +568,14 @@ fn detect_generic_assignment<'a>(line: &'a [u8], detections: &mut Vec<Detection<
         let mut search_from = 0;
         while let Some(relative) = find_ascii_case_insensitive(&line[search_from..], keyword) {
             let keyword_end = search_from + relative + keyword.len();
+            if *keyword == b"_key"
+                && line
+                    .get(keyword_end)
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            {
+                search_from = keyword_end;
+                continue;
+            }
             // A path such as "secret-scan.md, research/report-2026.tsv" is not
             // an assignment. Do not let punctuation later in prose turn a
             // hyphenated filename into a credential key.
@@ -581,6 +592,15 @@ fn detect_generic_assignment<'a>(line: &'a [u8], detections: &mut Vec<Detection<
                 search_from = keyword_end;
                 continue;
             };
+            if *keyword == b"_key"
+                && (!matches!(tail[operator], b'=' | b':')
+                    || !tail[..operator]
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\'' | b'"' | b'`')))
+            {
+                search_from = keyword_end;
+                continue;
+            }
             // A comma assigns only in the tuple form `("token", "value")`.
             // In prose such as "the token works (tags/list, image/0.9.4)" the
             // comma follows punctuation that no key ever contains.
@@ -617,8 +637,9 @@ fn detect_generic_assignment<'a>(line: &'a [u8], detections: &mut Vec<Detection<
                 .count();
             if (10..=150).contains(&value_length) {
                 let candidate = &line[value_start..value_start + value_length];
+                let minimum_entropy = if *keyword == b"_key" { 4.0 } else { 3.5 };
                 if has_alpha_and_digit(candidate)
-                    && shannon_entropy(candidate) >= 3.5
+                    && shannon_entropy(candidate) >= minimum_entropy
                     && !contains_stopword(candidate)
                 {
                     detections.push(Detection {
@@ -1026,6 +1047,22 @@ mod tests {
             "api_key = your_api_key_here\npassword = changeme12345\napi_token = {candidate} # secret-scanner:allow\n"
         );
         assert!(rules_for(&content).is_empty());
+    }
+
+    #[test]
+    fn detects_service_key_suffix_without_matching_prose_or_placeholders() {
+        let candidate = synthetic();
+        assert!(rules_for(&format!("relay_key: {candidate}")).contains("generic-api-key"));
+        assert!(rules_for(&format!("relay_keyboard: {candidate}")).is_empty());
+        assert!(rules_for(&format!("monkey: {candidate}")).is_empty());
+        assert!(rules_for(&format!("the relay_key is stored here: {candidate}")).is_empty());
+        assert!(rules_for(&format!("relay_key, {candidate}")).is_empty());
+        assert!(rules_for("relay_key: your_key_here123").is_empty());
+
+        let path = format!("fixture-{candidate}.txt");
+        let mut scanner = Scanner::new();
+        scanner.scan_bytes(&path, format!("relay_key: {candidate}\n").as_bytes());
+        assert_eq!(scanner.findings()[0].path, "<redacted-path>");
     }
 
     #[test]
