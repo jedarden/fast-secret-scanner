@@ -28,7 +28,7 @@ positive and negative tests and benchmark the staged path.
 
 | Rule ID | Detection |
 |---|---|
-| `generic-api-key` | Credential-like identifier, nearby operator, 10–150-character value, letters and digits, entropy ≥3.5, no common placeholder |
+| `generic-api-key` | Credential-like identifier, nearby operator, 10–150-character value, letters and digits, entropy ≥3.5, no common placeholder. Not an assignment: a value beginning with `//` (the rest of a URL after its scheme colon), and a comma preceded by anything other than identifier, quote or whitespace bytes (prose such as `token works (tags/list, image/0.9.4)`; the tuple form `("token", "value")` still matches) |
 | `authorization-header` | Authorization header value of at least eight characters and entropy ≥2.75 |
 | `curl-auth-user` | `curl -u/--user` value containing `:`, entropy ≥2.0, no common placeholder |
 | `private-key` | PEM private-key begin marker |

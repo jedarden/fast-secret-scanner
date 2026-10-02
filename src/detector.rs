@@ -503,6 +503,17 @@ fn detect_generic_assignment(line: &[u8], rules: &mut Vec<&'static str>) {
                 search_from = keyword_end;
                 continue;
             };
+            // A comma assigns only in the tuple form `("token", "value")`.
+            // In prose such as "the token works (tags/list, image/0.9.4)" the
+            // comma follows punctuation that no key ever contains.
+            if tail[operator] == b','
+                && !tail[..operator]
+                    .iter()
+                    .all(|byte| is_key_suffix_byte(*byte))
+            {
+                search_from = keyword_end;
+                continue;
+            }
             let mut value_start = keyword_end + operator + 1;
             while value_start < line.len()
                 && matches!(
@@ -514,6 +525,9 @@ fn detect_generic_assignment(line: &[u8], rules: &mut Vec<&'static str>) {
             }
             if value_start >= line.len()
                 || matches!(line[value_start], b'$' | b'{' | b'<' | b'[' | b'(')
+                // "//host/path" is the remainder of a URL whose scheme colon
+                // was taken for the operator, not a credential.
+                || line[value_start..].starts_with(b"//")
             {
                 search_from = keyword_end;
                 continue;
@@ -717,6 +731,10 @@ fn is_generic_secret_byte(byte: u8) -> bool {
         || matches!(byte, b'_' | b'-' | b'.' | b'=' | b'+' | b'/' | b'~' | b'@')
 }
 
+fn is_key_suffix_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'\'' | b'"' | b'`' | b' ' | b'\t')
+}
+
 fn has_alpha_and_digit(value: &[u8]) -> bool {
     value.iter().any(u8::is_ascii_alphabetic) && value.iter().any(u8::is_ascii_digit)
 }
@@ -909,5 +927,29 @@ mod tests {
         let note = "Affected paths: secret-scan.md, research/worktree-benchmark-2026-09-28.tsv";
         assert!(rules_for(note).is_empty());
         assert!(rules_for(&format!("secret = {}", synthetic())).contains("generic-api-key"));
+    }
+
+    #[test]
+    fn does_not_treat_a_url_scheme_colon_as_an_assignment() {
+        // The keyword is followed, within the operator window, by the colon
+        // of "https:"; the rest of the URL has letters, a digit and enough
+        // entropy to pass as a value.
+        let host = ["index.", "docker.io"].concat();
+        let note = format!("the registry token lives in auths[\"https://{host}/v1/\"]");
+        assert!(rules_for(&note).is_empty());
+        let assigned = format!("token: {}", synthetic());
+        assert!(rules_for(&assigned).contains("generic-api-key"));
+    }
+
+    #[test]
+    fn does_not_treat_a_prose_comma_as_an_assignment() {
+        let image = ["myorg-app", "/0.9.4"].concat();
+        let note = format!("the token works (tags/list, {image}) against the registry");
+        assert!(rules_for(&note).is_empty());
+        // The tuple form is still an assignment.
+        let tuple = format!("(\"api_token\", \"{}\")", synthetic());
+        assert!(rules_for(&tuple).contains("generic-api-key"));
+        let suffixed = format!("token_value, {}", synthetic());
+        assert!(rules_for(&suffixed).contains("generic-api-key"));
     }
 }
