@@ -6,5 +6,5 @@
 mod detector;
 mod git;
 
-pub use detector::{Finding, Scanner};
-pub use git::{scan_staged, scan_staged_patch, scan_worktree};
+pub use detector::{Finding, MAX_FILE_BYTES, ScanSkips, Scanner};
+pub use git::{MAX_PATCH_BYTES, scan_staged, scan_staged_patch, scan_worktree};

@@ -41,7 +41,8 @@ positive and negative tests and benchmark the staged path.
 - Arbitrary passwords without a recognized identifier or structure.
 - Secrets split across nonadjacent patch lines.
 - Existing Kubernetes context when only the data value is added.
-- Encoded, compressed, archived, binary, or generated secrets.
+- Encoded, compressed, archived, or generated secrets. Binary input is not
+  inspected and produces an incomplete-scan exit status when selected.
 - Provider formats not listed above.
 - Full Git history and deleted historical values.
 - Gitleaks allowlists, baselines, fingerprints, and provider validation.

@@ -38,7 +38,8 @@ provider token shape, the path field becomes `<redacted-path>`.
 |---:|---|---|
 | `0` | No candidate found | Continue |
 | `1` | One or more candidates found | Remove or rotate them, then restage |
-| `2` | Usage or execution error | Fix the invocation; do not treat it as clean |
+| `2` | Usage, execution, or incomplete scan | Fix the invocation or skipped input; do not treat it as clean |
+| `3` | Binary input needs the comprehensive scanner | Run the pinned Gitleaks gate; do not treat the fast scan alone as clean |
 
 ## Common commands
 
@@ -84,6 +85,14 @@ The pinned static Linux build is in [`dist/`](dist/README.md).
 It does **not** scan Git history, unpack archives, recursively decode content,
 validate credentials with providers, or reproduce Gitleaks' complete rule and
 allowlist system. See [exact rule coverage and gaps](research/rule-coverage.md).
+
+Oversized files and patches above 512 MiB produce exit `2`. Binary input
+without another finding produces exit `3` and proceeds to the pinned Gitleaks
+gate in fleet hooks. `--summary` reports oversized and binary skip counts
+without printing file contents or unsafe paths. The `--max-bytes` option
+applies to explicit, tracked, untracked, and standard-input file scans; staged
+and worktree patches use a separate 512 MiB cap. File limits cannot exceed
+512 MiB.
 
 ## Measured performance
 

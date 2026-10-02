@@ -58,6 +58,12 @@ def decision(event: dict) -> dict:
 
     if result.returncode == 0:
         return {}
+    if result.returncode == 3:
+        if kind == "PreToolUse":
+            return {}  # The Git pre-commit and Forgejo Gitleaks gates still run.
+        return {
+            "systemMessage": "secret-scanner skipped binary input; the comprehensive Git and Forgejo secret gates remain required."
+        }
     if result.returncode != 1:
         return block(kind, "secret-scanner failed; inspect the installed binary.", event)
     findings = result.stdout.decode("utf-8", errors="replace").splitlines()

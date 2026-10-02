@@ -96,6 +96,20 @@ mod unix {
         let stderr = String::from_utf8_lossy(&blocked.stderr);
         assert!(stderr.contains("<redacted-path>:1:generic-api-key"));
         assert!(!stderr.contains(&candidate));
+
+        git(&root, &["reset", "--", &sensitive_name]);
+        fs::remove_file(root.join(sensitive_name)).expect("remove synthetic filename");
+        fs::write(root.join("binary.dat"), [0, 1, 2, 3]).expect("write binary fixture");
+        git(&root, &["add", "binary.dat"]);
+        let binary = Command::new("git")
+            .args(["commit", "-q", "-m", "binary fixture", "--", "binary.dat"])
+            .current_dir(&root)
+            .env("SECRET_SCANNER_BIN", env!("CARGO_BIN_EXE_secret-scanner"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("binary commit");
+        assert!(binary.status.success());
+        assert!(String::from_utf8_lossy(&binary.stderr).contains("binary input skipped"));
         fs::remove_dir_all(&root).expect("remove exact test repository");
     }
 

@@ -311,6 +311,68 @@ fn matched_value_in_filename_or_stdin_label_is_redacted() {
     fs::remove_dir_all(&repository).expect("remove test repository");
 }
 
+#[test]
+fn skipped_and_oversized_input_is_not_reported_clean() {
+    let excessive_limit = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--stdin", "--max-bytes", "536870913"])
+        .output()
+        .expect("reject unbounded file limit");
+    assert_eq!(excessive_limit.status.code(), Some(2));
+
+    let candidate = candidate();
+    let content = format!("api_key = {candidate}\n");
+    let mut stdin = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--stdin", "--max-bytes", "10"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("scan limited stdin");
+    stdin
+        .stdin
+        .take()
+        .expect("stdin pipe")
+        .write_all(content.as_bytes())
+        .expect("write candidate");
+    let limited = stdin.wait_with_output().expect("limited result");
+    assert_eq!(limited.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&limited.stderr).contains("input exceeds scan byte limit"));
+    assert!(
+        !limited
+            .stderr
+            .windows(candidate.len())
+            .any(|part| part == candidate.as_bytes())
+    );
+
+    let repository = temporary_repository("incomplete");
+    git(&repository, &["init", "-q"]);
+    fs::write(repository.join("untracked.txt"), &content).expect("write untracked candidate");
+    let worktree = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--worktree", "--max-bytes", "10", "--summary"])
+        .current_dir(&repository)
+        .output()
+        .expect("scan limited worktree");
+    assert_eq!(worktree.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&worktree.stderr).contains("skipped_oversized=1"));
+    assert!(
+        !worktree
+            .stderr
+            .windows(candidate.len())
+            .any(|part| part == candidate.as_bytes())
+    );
+
+    fs::write(repository.join("binary.dat"), [0, 1, 2, 3, 4]).expect("write binary file");
+    git(&repository, &["add", "binary.dat"]);
+    let staged = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .current_dir(&repository)
+        .output()
+        .expect("scan binary patch");
+    assert_eq!(staged.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&staged.stderr).contains("binary input(s)"));
+
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
 fn temporary_repository(label: &str) -> std::path::PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

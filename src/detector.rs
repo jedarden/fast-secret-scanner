@@ -4,6 +4,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_MAX_BYTES: u64 = 10_000_000;
+pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ScanSkips {
+    pub oversized: usize,
+    pub binary: usize,
+}
+
+impl ScanSkips {
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.oversized == 0 && self.binary == 0
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Finding {
@@ -25,6 +39,7 @@ pub struct Scanner {
     findings: Vec<Finding>,
     seen: HashSet<(String, usize, &'static str)>,
     unsafe_paths: HashSet<String>,
+    skips: ScanSkips,
     max_bytes: u64,
 }
 
@@ -41,6 +56,7 @@ impl Scanner {
             findings: Vec::new(),
             seen: HashSet::new(),
             unsafe_paths: HashSet::new(),
+            skips: ScanSkips::default(),
             max_bytes: DEFAULT_MAX_BYTES,
         }
     }
@@ -48,13 +64,18 @@ impl Scanner {
     #[must_use]
     pub fn with_max_bytes(max_bytes: u64) -> Self {
         Self {
-            max_bytes,
+            max_bytes: max_bytes.min(MAX_FILE_BYTES),
             ..Self::new()
         }
     }
 
     pub fn scan_bytes(&mut self, path: &str, content: &[u8]) {
-        if content.len() as u64 > self.max_bytes || content.contains(&0) {
+        if content.len() as u64 > self.max_bytes {
+            self.mark_oversized();
+            return;
+        }
+        if content.contains(&0) {
+            self.mark_binary();
             return;
         }
 
@@ -131,6 +152,19 @@ impl Scanner {
         counts
     }
 
+    #[must_use]
+    pub fn skips(&self) -> ScanSkips {
+        self.skips
+    }
+
+    pub(crate) fn mark_binary(&mut self) {
+        self.skips.binary = self.skips.binary.saturating_add(1);
+    }
+
+    pub(crate) fn mark_oversized(&mut self) {
+        self.skips.oversized = self.skips.oversized.saturating_add(1);
+    }
+
     fn scan_directory(&mut self, root: &Path) -> io::Result<()> {
         let mut pending = vec![root.to_path_buf()];
         while let Some(directory) = pending.pop() {
@@ -153,6 +187,7 @@ impl Scanner {
     fn scan_regular_file(&mut self, path: &Path) -> io::Result<()> {
         let metadata = fs::metadata(path)?;
         if metadata.len() > self.max_bytes {
+            self.mark_oversized();
             return Ok(());
         }
         let content = fs::read(path)?;

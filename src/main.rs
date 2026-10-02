@@ -3,7 +3,9 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use secret_scanner::{Scanner, scan_staged, scan_staged_patch, scan_worktree};
+use secret_scanner::{
+    MAX_FILE_BYTES, MAX_PATCH_BYTES, Scanner, scan_staged, scan_staged_patch, scan_worktree,
+};
 
 const USAGE: &str = "\
 Usage: secret-scanner [OPTIONS] [PATH ...]
@@ -17,7 +19,7 @@ Options:
   --tracked         scan all currently tracked files
   --stdin           scan standard input
   --path-label PATH label standard input findings with PATH
-  --max-bytes N     skip explicit/tracked files larger than N bytes
+  --max-bytes N     maximum explicit, tracked, untracked, or stdin file size
   --quiet           suppress path:line:rule output
   --summary         print counts by rule to stderr
   -h, --help        show this help
@@ -45,13 +47,9 @@ struct Options {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(found) => {
-            if found {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
-        }
+        Ok(ScanOutcome::Clean) => ExitCode::SUCCESS,
+        Ok(ScanOutcome::Findings) => ExitCode::FAILURE,
+        Ok(ScanOutcome::UnsupportedBinary) => ExitCode::from(3),
         Err(message) => {
             eprintln!("secret-scanner: {message}");
             ExitCode::from(2)
@@ -59,9 +57,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<bool, String> {
+enum ScanOutcome {
+    Clean,
+    Findings,
+    UnsupportedBinary,
+}
+
+fn run() -> Result<ScanOutcome, String> {
     let Some(options) = parse_options()? else {
-        return Ok(false);
+        return Ok(ScanOutcome::Clean);
     };
     let mut scanner = Scanner::with_max_bytes(options.max_bytes);
 
@@ -69,18 +73,12 @@ fn run() -> Result<bool, String> {
         Mode::Staged => scan_staged(&mut scanner).map_err(|error| error.to_string())?,
         Mode::Worktree => scan_worktree(&mut scanner).map_err(|error| error.to_string())?,
         Mode::PatchStdin => {
-            let mut patch = Vec::new();
-            io::stdin()
-                .read_to_end(&mut patch)
-                .map_err(|error| error.to_string())?;
+            let patch = read_limited(io::stdin().lock(), MAX_PATCH_BYTES)?;
             scan_staged_patch(&mut scanner, &patch).map_err(|error| error.to_string())?;
         }
         Mode::Tracked => scanner.scan_tracked().map_err(|error| error.to_string())?,
         Mode::Stdin => {
-            let mut content = Vec::new();
-            io::stdin()
-                .read_to_end(&mut content)
-                .map_err(|error| error.to_string())?;
+            let content = read_limited(io::stdin().lock(), options.max_bytes.min(MAX_PATCH_BYTES))?;
             scanner.scan_bytes(&options.path_label, &content);
         }
         Mode::Paths => {
@@ -95,6 +93,7 @@ fn run() -> Result<bool, String> {
         }
     }
 
+    let skips = scanner.skips();
     let summary = scanner.summary();
     let findings = scanner.findings();
     if !options.quiet {
@@ -112,8 +111,40 @@ fn run() -> Result<bool, String> {
         for (rule, count) in summary {
             eprintln!("{rule}={count}");
         }
+        if !skips.is_empty() {
+            eprintln!("skipped_oversized={}", skips.oversized);
+            eprintln!("skipped_binary={}", skips.binary);
+        }
     }
-    Ok(!findings.is_empty())
+    if skips.oversized > 0 {
+        return Err(format!(
+            "incomplete scan: {} oversized input(s), {} binary input(s)",
+            skips.oversized, skips.binary
+        ));
+    }
+    if !findings.is_empty() {
+        return Ok(ScanOutcome::Findings);
+    }
+    if skips.binary > 0 {
+        eprintln!(
+            "secret-scanner: {} binary input(s) need the comprehensive scanner",
+            skips.binary
+        );
+        return Ok(ScanOutcome::UnsupportedBinary);
+    }
+    Ok(ScanOutcome::Clean)
+}
+
+fn read_limited(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
+    let mut content = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut content)
+        .map_err(|error| error.to_string())?;
+    if content.len() as u64 > limit {
+        return Err("input exceeds scan byte limit".to_owned());
+    }
+    Ok(content)
 }
 
 fn parse_options() -> Result<Option<Options>, String> {
@@ -146,6 +177,11 @@ fn parse_options() -> Result<Option<Options>, String> {
                 max_bytes = value
                     .parse()
                     .map_err(|_| "--max-bytes must be an unsigned integer".to_owned())?;
+                if max_bytes > MAX_FILE_BYTES {
+                    return Err(format!(
+                        "--max-bytes exceeds {MAX_FILE_BYTES} byte hard cap"
+                    ));
+                }
             }
             "-h" | "--help" => {
                 print!("{USAGE}");

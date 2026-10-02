@@ -20,6 +20,12 @@ Patch parsing tracks file headers and hunk line counts. A `+++ ` byte sequence
 inside an added line remains file content, so it cannot change the active path
 or hide following additions. Inconsistent or truncated patch input returns an
 execution error instead of a clean result.
+Git diff output and patch standard input are capped at 512 MiB before parsing.
+Oversized or binary file scans and Git binary patch markers increment skip
+counts. Oversized input exits `2`; binary input without a text finding exits
+`3`, so fleet hooks can continue to their pinned Gitleaks backstop. Both
+statuses report counts without filenames. Exit `0` means every selected text
+input was scanned without a finding.
 
 ## Detector strategy
 

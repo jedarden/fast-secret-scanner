@@ -24,6 +24,9 @@ if [ "$hook" = pre-commit ]; then
       echo 'secret-scanner: remove the candidate, rotate it if live, then restage' >&2
       exit 1
       ;;
+    3)
+      echo 'secret-scanner: binary input skipped; continuing to the comprehensive Git hook' >&2
+      ;;
     *)
       echo 'secret-scanner: execution failed; commit blocked' >&2
       exit 1

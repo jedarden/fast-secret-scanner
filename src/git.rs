@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::detector::{Scanner, StagedFileState};
+
+pub const MAX_PATCH_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Scan lines added to the current repository's Git index.
 ///
@@ -44,7 +46,8 @@ pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
 }
 
 fn scan_diff(scanner: &mut Scanner, extra: &[&str]) -> io::Result<()> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["-c", "core.quotePath=false", "diff"])
         .args(extra)
         .args([
@@ -55,11 +58,30 @@ fn scan_diff(scanner: &mut Scanner, extra: &[&str]) -> io::Result<()> {
             "--diff-filter=ACMR",
             "--",
         ])
-        .output()?;
-    if !output.status.success() {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    let mut patch = Vec::new();
+    let read_result = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("git diff stdout unavailable"))?
+        .take(MAX_PATCH_BYTES + 1)
+        .read_to_end(&mut patch);
+    if let Err(error) = read_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    if patch.len() as u64 > MAX_PATCH_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other("Git patch exceeds scan byte limit"));
+    }
+    if !child.wait()?.success() {
         return Err(io::Error::other("git diff failed"));
     }
-    scan_staged_patch(scanner, &output.stdout)
+    scan_staged_patch(scanner, &patch)
 }
 
 /// Scan added lines in a Git-generated patch.
@@ -124,6 +146,10 @@ pub fn scan_staged_patch(scanner: &mut Scanner, patch: &[u8]) -> io::Result<()> 
             if next.old_remaining != 0 || next.new_remaining != 0 {
                 hunk = Some(next);
             }
+            continue;
+        }
+        if raw_line.starts_with(b"Binary files ") || raw_line == b"GIT binary patch" {
+            scanner.mark_binary();
             continue;
         }
         if (raw_line.starts_with(b"+") || raw_line.starts_with(b"-")) && has_new_header {
