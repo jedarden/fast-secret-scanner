@@ -88,6 +88,64 @@ fn agent_hook_handles_findings_clean_errors_non_git_and_stop_loop() {
     fs::remove_dir_all(&root).expect("remove test repository");
 }
 
+#[test]
+fn file_write_events_scan_ignored_files_from_a_repository_subdirectory() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "secret-scanner-write-hook-{}-{unique}",
+        std::process::id()
+    ));
+    let subdir = root.join("subdir");
+    fs::create_dir_all(&subdir).expect("temporary directory");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .expect("git init")
+            .success()
+    );
+    fs::write(root.join(".gitignore"), ".env\n").expect("ignore rule");
+    let candidate = ["A7bQ9xL2", "mN4pR8sT", "3vW6yZ1c", "D5fG0hJk"].concat();
+    fs::write(subdir.join(".env"), format!("relay_key = {candidate}\n"))
+        .expect("runtime written fixture");
+
+    for (tool, input) in [
+        ("Write", "\"file_path\":\".env\""),
+        ("Edit", "\"file_path\":\".env\""),
+        ("mcp__filesystem__write_file", "\"path\":\".env\""),
+        ("workspace_write_file", "\"file_path\":\".env\""),
+        (
+            "apply_patch",
+            "\"command\":\"*** Begin Patch\\n*** Update File: .env\\n*** End Patch\"",
+        ),
+    ] {
+        let event = format!(
+            "{{\"cwd\":\"{}\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"{tool}\",\"tool_input\":{{{input}}},\"tool_response\":{{\"type\":\"update\"}}}}",
+            subdir.display()
+        );
+        let output = run_hook(&event, env!("CARGO_BIN_EXE_secret-scanner"));
+        assert!(
+            output.contains("<written-file>:1:generic-api-key"),
+            "{tool}"
+        );
+        assert!(!output.contains(&candidate));
+    }
+
+    let read_only = event(&subdir, "PostToolUse", "git status --short", false);
+    assert_eq!(run_hook(&read_only, "missing-scanner"), "{}");
+    fs::write(subdir.join("clean.txt"), "ordinary text\n").expect("clean write");
+    let clean = format!(
+        "{{\"cwd\":\"{}\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_input\":{{\"file_path\":\"clean.txt\"}}}}",
+        subdir.display()
+    );
+    assert_eq!(run_hook(&clean, env!("CARGO_BIN_EXE_secret-scanner")), "{}");
+    fs::remove_dir_all(&root).expect("remove temporary repository");
+}
+
 fn event(root: &Path, kind: &str, command: &str, stop_hook_active: bool) -> String {
     format!(
         "{{\"cwd\":\"{}\",\"hook_event_name\":\"{kind}\",\"tool_name\":\"Bash\",\"tool_input\":{{\"command\":\"{command}\"}},\"stop_hook_active\":{stop_hook_active}}}",
