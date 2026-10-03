@@ -65,3 +65,11 @@ static target command from commit `ce75498e36ca9be573623bdc375192d5ccb76a1f`. It
 (NUL-separated documents, each scanned on its own). Detection is unchanged
 from 0.2.4. Its SHA-256 is `ce72ae68acfa2d9cf59b6c8233ca8a4257608b309e0a798c134aa6ac2aa2ae71`. Installed as `~/.local/bin/secret-scanner`
 on codinghome; the Forgejo pin is still `0.2.3`.
+
+## 0.2.7 (span service, fss-b5636e43)
+
+`secret-scanner-v0.2.7-x86_64-unknown-linux-musl` is built with the same
+static target command from commit `dcc1543154d74322cb956aadc9dd370ad9a8c264`. It adds `--serve` (length-framed
+documents in, one span line out each) for bead-rs. Detection is unchanged
+from 0.2.4. Its SHA-256 is `be9768454ebec0c9575e459134bbaf308c8ee6d7057e9d1843d0a6832e43a39f`. Installed as `~/.local/bin/secret-scanner`
+on codinghome; the Forgejo pin is still `0.2.3`.
