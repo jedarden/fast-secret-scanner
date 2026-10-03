@@ -24,17 +24,19 @@ This is a curated high-value set, not the Gitleaks catalog.
 Provider formats change. Before changing these bounds, add runtime-constructed
 positive and negative tests and benchmark the staged path.
 
+Provider-prefix matches whose body is a documentation placeholder are not reported: a stopword (`your-`, `example`, …), an identifier-shaped body, or, for mixed-case alphabets only, a body with no digit and a single letter case (`sk-your-openai-api-key-here`, `ghp_` plus one repeated lowercase run). Uppercase-only and hex alphabets keep every match, because their real keys can be single-case and digit-free (fss-eeeb789c).
+
 ## Contextual and structural rules
 
 | Rule ID | Detection |
 |---|---|
-| `generic-api-key` | Credential-like identifier, nearby operator, 10–150-character value, letters and digits, entropy ≥3.5, no common placeholder. A service-specific `_key` suffix additionally requires a direct `:` or `=` assignment and entropy ≥4.0. Not an assignment: a value beginning with `//` (the rest of a URL after its scheme colon), and a comma preceded by anything other than identifier, quote or whitespace bytes (prose such as `token works (tags/list, image/0.9.4)`; the tuple form `("token", "value")` still matches) |
-| `authorization-header` | Authorization header value of at least eight characters and entropy ≥2.75 |
-| `curl-auth-user` | `curl -u/--user` value containing `:`, entropy ≥2.0, no common placeholder |
+| `generic-api-key` | Credential-like identifier, nearby operator, 10–150-character value, letters and digits, entropy ≥3.5, no common placeholder. A service-specific `_key` suffix additionally requires a direct `:` or `=` assignment and entropy ≥4.0. Not an assignment: a value beginning with `//` (the rest of a URL after its scheme colon); any byte other than identifier, quote or whitespace between the keyword and the operator (prose such as `token works (tags/list, image/0.9.4)` or `credential keys) -> name`; the tuple form `("token", "value")` still matches); a backslash there (a JSON-escaped `\n` puts the operator on another line of prose). Not a credential: an identifier-shaped value, i.e. separator-joined segments (`-_./=:+~@`) that are each a word with at most two letter/digit transitions and no mixed case plus digits (`findings_blocking=0`, `application/x-www-form-urlencoded`, `k8s/ord-devimprint/app`, `CHANGE_ME_32_CHARS`); random material alternates letters and digits and fails the bound. A value without a separator is never treated as an identifier (fss-eeeb789c) |
+| `authorization-header` | Authorization header value of at least eight characters and entropy ≥2.75 that contains a digit or is at least 24 characters long; not a call expression (`name(`) and not identifier-shaped (`AWS4-HMAC-SHA256`). A single word such as `Forwarded` is prose (fss-eeeb789c) |
+| `curl-auth-user` | `curl -u/--user` value containing `:`, entropy ≥2.0, no common placeholder; not a `date -u +%…` format and not a variable reference password (`${VAR}`, `$(cmd)`, `$NAME`, `$_name`; a `$` followed by mixed-case material is still a literal) (fss-eeeb789c) |
 | `private-key` | PEM private-key begin marker |
 | `jwt` | Three base64url-like segments beginning with the normal JWT header prefix |
-| `basic-auth-uri` | URI authority containing username/password with a nontrivial password |
-| `kubernetes-secret-yaml` | Newly added nearby `kind: Secret`, `data:`, and base64-shaped field |
+| `basic-auth-uri` | URI authority containing username/password with a nontrivial password; not a variable or template reference (`${PASS}`, `{{ … }}`, `<password>`, `[password]`), not identifier-shaped, not equal to the username (`postgres:postgres@127.0.0.1`), and not the literal words `password`/`passwd`/`pass`/`secret`/`pwd` (fss-eeeb789c) |
+| `kubernetes-secret-yaml` | Base64-shaped value in the `data:` or `stringData:` block (exact keys) of a document whose `kind:` is exactly `Secret`, within 20 lines. Not matched: `ExternalSecret`, `ClusterSecretStore`, `SecretStore`, `SealedSecret` (`encryptedData` is ciphertext), `metadata:`, YAML comment lines, URL values, identifier-shaped placeholders, and connection coordinates (`username`, `user`, `host`, `port`, `database`, `dbname`, `namespace`, `region`, `bucket`, `endpoint`, also as `_USER`-style suffixes). Before 0.2.4 any `kind:` line containing "secret" and any key ending in `data:` qualified, which flagged every ExternalSecret (fss-eeeb789c) |
 
 ## Known gaps
 

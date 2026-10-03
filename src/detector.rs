@@ -519,7 +519,8 @@ fn detect_provider_tokens<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>
             } else {
                 (specification.minimum..=specification.maximum).contains(&length)
             };
-            if valid_length {
+            let body = &line[start..start + length];
+            if valid_length && !is_placeholder_body(specification.alphabet, body) {
                 detections.push(Detection {
                     rule: specification.rule,
                     sensitive: &line[position..start + length],
@@ -553,7 +554,7 @@ fn detect_provider_tokens<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>
             continue;
         }
         let length = rest.iter().take_while(|byte| is_base64_url(**byte)).count();
-        if length >= 20 {
+        if length >= 20 && !is_placeholder_body(Alphabet::Base64Url, &rest[..length]) {
             detections.push(Detection {
                 rule: "openai-token",
                 sensitive: &line[position..position + 3 + length],
@@ -592,6 +593,15 @@ fn detect_generic_assignment<'a>(line: &'a [u8], detections: &mut Vec<Detection<
                 search_from = keyword_end;
                 continue;
             };
+            // A backslash between the keyword and the operator is an escape
+            // sequence: in JSON-encoded text (bead checkpoints, logs) "\\n"
+            // ends the line the keyword is on, so the operator and value that
+            // follow belong to a different line of prose. A real key name
+            // never contains a backslash.
+            if tail[..operator].contains(&b'\\') {
+                search_from = keyword_end;
+                continue;
+            }
             if *keyword == b"_key"
                 && (!matches!(tail[operator], b'=' | b':')
                     || !tail[..operator]
@@ -601,13 +611,14 @@ fn detect_generic_assignment<'a>(line: &'a [u8], detections: &mut Vec<Detection<
                 search_from = keyword_end;
                 continue;
             }
-            // A comma assigns only in the tuple form `("token", "value")`.
-            // In prose such as "the token works (tags/list, image/0.9.4)" the
-            // comma follows punctuation that no key ever contains.
-            if tail[operator] == b','
-                && !tail[..operator]
-                    .iter()
-                    .all(|byte| is_key_suffix_byte(*byte))
+            // Only key-name bytes may sit between the keyword and the
+            // operator. In prose such as "the token works (tags/list,
+            // image/0.9.4)" or "credential keys) -> name" the comma or the
+            // arrow follows punctuation that no key ever contains. This also
+            // keeps the comma's tuple form `("token", "value")`.
+            if !tail[..operator]
+                .iter()
+                .all(|byte| is_key_suffix_byte(*byte))
             {
                 search_from = keyword_end;
                 continue;
@@ -641,6 +652,7 @@ fn detect_generic_assignment<'a>(line: &'a [u8], detections: &mut Vec<Detection<
                 if has_alpha_and_digit(candidate)
                     && shannon_entropy(candidate) >= minimum_entropy
                     && !contains_stopword(candidate)
+                    && !is_identifier_shaped(candidate)
                 {
                     detections.push(Detection {
                         rule: "generic-api-key",
@@ -707,7 +719,17 @@ fn header_secret_value(value: &[u8]) -> Option<&[u8]> {
         .take(256)
         .take_while(|byte| is_generic_secret_byte(**byte))
         .count();
-    (length >= 8 && shannon_entropy(&value[..length]) >= 2.75).then_some(&value[..length])
+    let candidate = &value[..length];
+    // A credential carries digits or is long. A single word ("Forwarded"),
+    // or a function name followed by "(", is prose about the header.
+    let token_like = candidate.iter().any(u8::is_ascii_digit) || candidate.len() >= 24;
+    let call_expression = value.get(length) == Some(&b'(');
+    (length >= 8
+        && shannon_entropy(candidate) >= 2.75
+        && token_like
+        && !call_expression
+        && !is_identifier_shaped(candidate))
+    .then_some(candidate)
 }
 
 fn detect_curl_user<'a>(line: &'a [u8], curl_context: bool, detections: &mut Vec<Detection<'a>>) {
@@ -727,6 +749,14 @@ fn detect_curl_user<'a>(line: &'a [u8], curl_context: bool, detections: &mut Vec
         .take_while(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'\'' | b'"'))
         .count();
     let candidate = &rest[..length];
+    let password = candidate
+        .iter()
+        .position(|byte| *byte == b':')
+        .map_or(&candidate[..0], |colon| &candidate[colon + 1..]);
+    // `date -u +%FT%T` near a curl call is a date format, not a user:password.
+    if candidate.contains(&b'%') || is_placeholder_reference(password) {
+        return;
+    }
     if candidate.len() >= 7
         && candidate.contains(&b':')
         && shannon_entropy(candidate) >= 2.0
@@ -790,8 +820,27 @@ fn detect_basic_auth_uri<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>
     let Some(colon) = credentials.iter().position(|byte| *byte == b':') else {
         return;
     };
+    let user = &credentials[..colon];
     let password = &credentials[colon + 1..];
-    if password.len() >= 6 && shannon_entropy(password) >= 2.0 && !contains_stopword(password) {
+    // `postgres:postgres@127.0.0.1` is a throwaway default, and a password
+    // spelled "password" is documentation of the URL's shape.
+    let default_or_label = password.eq_ignore_ascii_case(user)
+        || [
+            b"password".as_slice(),
+            b"passwd",
+            b"pass",
+            b"secret",
+            b"pwd",
+        ]
+        .iter()
+        .any(|word| password.eq_ignore_ascii_case(word));
+    if !default_or_label
+        && password.len() >= 6
+        && shannon_entropy(password) >= 2.0
+        && !contains_stopword(password)
+        && !is_placeholder_reference(password)
+        && !is_identifier_shaped(password)
+    {
         detections.push(Detection {
             rule: "basic-auth-uri",
             sensitive: password,
@@ -805,20 +854,39 @@ fn detect_kubernetes<'a>(
     state: &mut FileState,
     detections: &mut Vec<Detection<'a>>,
 ) {
-    if contains_ascii_case_insensitive(line, b"kind:")
-        && contains_ascii_case_insensitive(line, b"secret")
-    {
-        state.kubernetes_kind = Some(line_number);
-        state.kubernetes_reported = false;
+    // Only a core `kind: Secret` carries values. ExternalSecret,
+    // ClusterSecretStore, SecretStore and SealedSecret (ciphertext in
+    // `encryptedData`) are references or encrypted, and used to match on the
+    // substring "secret".
+    if let Some(kind) = yaml_key_value(line, b"kind") {
+        if kind == b"Secret" {
+            state.kubernetes_kind = Some(line_number);
+            state.kubernetes_data = None;
+            state.kubernetes_reported = false;
+        } else {
+            state.kubernetes_kind = None;
+            state.kubernetes_data = None;
+        }
+        return;
     }
-    if contains_ascii_case_insensitive(line, b"data:") {
+    // The value block is exactly `data:` or `stringData:`; `metadata:` and
+    // `encryptedData:` merely end in "data:".
+    if yaml_key_value(line, b"data").is_some() || yaml_key_value(line, b"stringData").is_some() {
         state.kubernetes_data = Some(line_number);
+        return;
     }
     let nearby = state
         .kubernetes_kind
         .zip(state.kubernetes_data)
-        .is_some_and(|(kind, data)| line_number.saturating_sub(kind.min(data)) <= 20);
-    if nearby && !state.kubernetes_reported {
+        .is_some_and(|(kind, data)| {
+            line_number > data && line_number.saturating_sub(kind.min(data)) <= 20
+        });
+    // A YAML comment documents the Secret; it is not one of its values.
+    let comment = line
+        .iter()
+        .find(|byte| !matches!(byte, b' ' | b'\t'))
+        .is_some_and(|byte| *byte == b'#');
+    if nearby && !state.kubernetes_reported && !comment {
         if let Some(sensitive) = yaml_base64_value(line) {
             detections.push(Detection {
                 rule: "kubernetes-secret-yaml",
@@ -829,13 +897,89 @@ fn detect_kubernetes<'a>(
     }
 }
 
+/// The value of a YAML mapping line whose key is exactly `key` (after
+/// indentation and an optional list dash), with quotes and a trailing comment
+/// removed. `None` when the line has a different key.
+fn yaml_key_value<'a>(line: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let mut rest = line;
+    while rest
+        .first()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        rest = &rest[1..];
+    }
+    if rest.starts_with(b"- ") {
+        rest = &rest[2..];
+    }
+    let rest = rest.strip_prefix(key)?.strip_prefix(b":")?;
+    let rest = match rest.iter().position(|byte| *byte == b'#') {
+        Some(comment) => &rest[..comment],
+        None => rest,
+    };
+    let mut value = rest;
+    while value
+        .first()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'"' | b'\''))
+    {
+        value = &value[1..];
+    }
+    while value
+        .last()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'"' | b'\'' | b'\r'))
+    {
+        value = &value[..value.len() - 1];
+    }
+    Some(value)
+}
+
 fn yaml_base64_value(line: &[u8]) -> Option<&[u8]> {
     let colon = line.iter().position(|byte| *byte == b':')?;
+    // Connection coordinates sit next to the credential in the same Secret
+    // but are not secrets themselves.
+    let key = line[..colon]
+        .iter()
+        .skip_while(|byte| matches!(byte, b' ' | b'\t' | b'-'))
+        .copied()
+        .collect::<Vec<u8>>();
+    if [
+        b"username".as_slice(),
+        b"user",
+        b"host",
+        b"hostname",
+        b"port",
+        b"database",
+        b"dbname",
+        b"namespace",
+        b"region",
+        b"bucket",
+        b"endpoint",
+    ]
+    .iter()
+    .any(|name| {
+        key.eq_ignore_ascii_case(name)
+            || (key.len() > name.len() + 1
+                && key[key.len() - name.len()..].eq_ignore_ascii_case(name)
+                && matches!(key[key.len() - name.len() - 1], b'_' | b'-' | b'.'))
+    }) {
+        return None;
+    }
     let value = trim_value_prefix(&line[colon + 1..]);
     let length = value
         .iter()
         .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
         .count();
+    // The whole value token, including the bytes base64 never contains, so
+    // a URL ("postgresql://...") or a placeholder name
+    // ("REPLACE_WITH_ACCESS_KEY") is not mistaken for its base64-looking
+    // prefix. URLs are the basic-auth-uri rule's business.
+    let token_length = value
+        .iter()
+        .take_while(|byte| !matches!(byte, b' ' | b'\t' | b'"' | b'\'' | b'#' | b'\r'))
+        .count();
+    let token = &value[..token_length];
+    if find_subslice(token, b"://").is_some() || is_identifier_shaped(token) {
+        return None;
+    }
     (length >= 10 && value[..length].iter().all(u8::is_ascii)).then_some(&value[..length])
 }
 
@@ -862,6 +1006,85 @@ fn is_key_suffix_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'\'' | b'"' | b'`' | b' ' | b'\t')
 }
 
+/// Whether a candidate is a name rather than a credential: separator-joined
+/// segments (paths, MIME types, host:port options, snake/kebab/SCREAMING case
+/// names such as `findings_blocking=0` or `CHANGE_ME_32_CHARS`) where every
+/// segment is a word with at most two letter/digit transitions (`k8s`, `v2`,
+/// `2026a`). Random credentials alternate letters and digits throughout, so a
+/// segment of them fails the transition bound. A candidate without a
+/// separator is never treated as a name.
+fn is_identifier_shaped(value: &[u8]) -> bool {
+    let separator = |byte: &u8| {
+        matches!(
+            byte,
+            b'-' | b'_' | b'.' | b'/' | b'=' | b':' | b'+' | b'~' | b'@'
+        )
+    };
+    if !value.iter().any(separator) {
+        return false;
+    }
+    value
+        .split(separator)
+        .filter(|segment| !segment.is_empty())
+        .all(|segment| {
+            // Mixed case is a word (CamelCase) only without digits; mixed
+            // case plus digits is how random tokens look.
+            let lower = segment.iter().any(u8::is_ascii_lowercase);
+            let upper = segment.iter().skip(1).any(u8::is_ascii_uppercase);
+            if lower && upper && segment.iter().any(u8::is_ascii_digit) {
+                return false;
+            }
+            let transitions = segment
+                .windows(2)
+                .filter(|pair| pair[0].is_ascii_digit() != pair[1].is_ascii_digit())
+                .count();
+            transitions <= 2
+        })
+}
+
+/// A templating reference standing in for a value: `${VAR}`, `$(cmd)`,
+/// `$UPPER_CASE_VAR`, `$_lower_var`, `{{ .Values.x }}`, `<password>`, `[password]`. A `$`
+/// followed by mixed-case material is a literal value, not a reference.
+fn is_placeholder_reference(value: &[u8]) -> bool {
+    // `$NAME` / `$_name`: one letter case plus digits and underscores, the
+    // shape of a shell or environment variable name.
+    let name = value.get(1..).unwrap_or_default();
+    let env_reference = value.first() == Some(&b'$')
+        && name
+            .first()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        && !(name.iter().any(u8::is_ascii_lowercase) && name.iter().any(u8::is_ascii_uppercase));
+    env_reference
+        || value.starts_with(b"$(")
+        || value
+            .first()
+            .is_some_and(|byte| matches!(byte, b'{' | b'<' | b'['))
+        || find_subslice(value, b"${").is_some()
+        || find_subslice(value, b"{{").is_some()
+}
+
+/// Whether the body after a provider prefix is a documentation placeholder
+/// (`sk-your-openai-key-here`, `ghp_` followed by one repeated letter class)
+/// rather than generated key material. Random bodies over a mixed-case
+/// alphabet carry digits and both letter cases; uppercase-only or hex
+/// alphabets are exempt from that half of the test because their real keys
+/// can be single-case and digit-free.
+fn is_placeholder_body(alphabet: Alphabet, body: &[u8]) -> bool {
+    if contains_stopword(body) || is_identifier_shaped(body) {
+        return true;
+    }
+    if matches!(alphabet, Alphabet::UpperAlphanumeric | Alphabet::Hex) {
+        return false;
+    }
+    let digits = body.iter().any(u8::is_ascii_digit);
+    let lower = body.iter().any(u8::is_ascii_lowercase);
+    let upper = body.iter().any(u8::is_ascii_uppercase);
+    !digits && (!lower || !upper)
+}
+
 fn has_alpha_and_digit(value: &[u8]) -> bool {
     value.iter().any(u8::is_ascii_alphabetic) && value.iter().any(u8::is_ascii_digit)
 }
@@ -877,6 +1100,7 @@ fn contains_stopword(value: &[u8]) -> bool {
         b"changeit",
         b"replace",
         b"your_",
+        b"your-",
         b"xxxxxx",
     ]
     .iter()
@@ -1094,5 +1318,96 @@ mod tests {
         assert!(rules_for(&tuple).contains("generic-api-key"));
         let suffixed = format!("token_value, {}", synthetic());
         assert!(rules_for(&suffixed).contains("generic-api-key"));
+    }
+
+    // fss-eeeb789c: shapes seen as false positives on 2026-10-03 in sharded
+    // bead checkpoints and declarative-config. Each negative case is paired
+    // with a positive case so the narrowing cannot silently remove a rule.
+
+    #[test]
+    fn kubernetes_rule_targets_only_core_secret_values() {
+        let external = "apiVersion: external-secrets.io/v1\nkind: ExternalSecret\nmetadata:\n  name: app\n  namespace: app\nspec:\n  refreshInterval: 1h\n  secretStoreRef:\n    name: openbao\n    kind: ClusterSecretStore\n  data:\n    - secretKey: TOKEN\n";
+        assert!(rules_for(external).is_empty());
+        // SealedSecret ciphertext is hundreds of characters long.
+        let encrypted = ["AgBy3i4OJSWK", "+PiTySYZZA9rO", "43cGDEq"]
+            .concat()
+            .repeat(12);
+        let sealed = format!(
+            "kind: SealedSecret\nmetadata:\n  name: app\nspec:\n  encryptedData:\n    token: {encrypted}\n"
+        );
+        assert!(rules_for(&sealed).is_empty());
+        let encoded = ["QWJjZGVm", "R2hpSmtM", "bW5PcFFy"].concat();
+        let documented = format!(
+            "kind: Secret\nmetadata:\n  name: app\nstringData:\n  # Account ID: {encoded}\n  username: applicationuser\n  DB_HOST: databaseserver01\n  url: postgresql://app:${{PASSWORD}}@db:5432/app\n  key: REPLACE_WITH_ACCESS_KEY\n"
+        );
+        assert!(rules_for(&documented).is_empty());
+        let real = format!("kind: Secret\nmetadata:\n  name: app\ndata:\n  password: {encoded}\n");
+        assert!(rules_for(&real).contains("kubernetes-secret-yaml"));
+    }
+
+    #[test]
+    fn generic_rule_ignores_escaped_newlines_arrows_and_identifiers() {
+        let candidate = synthetic();
+        let escaped = format!("\"notes\":\"use the token\\n     - client_id: {candidate}\"");
+        let arrow = "the credential keys) -> rotation-2026ab1c and more".to_owned();
+        let names = [
+            "bead doctor --scope secrets`: findings_blocking=0, advisory=12",
+            "token: application/x-www-form-urlencoded",
+            "the secret: k8s/ord-devimprint/commitgraph/externalsecret",
+            "credentials: aaaaaaaaa-a1-bbbbbbbbbbb",
+            "POSTGRES_PASSWORD: CHANGE_ME_SECURE_PASSWORD_32_CHARS",
+        ];
+        assert!(!rules_for(&escaped).contains("generic-api-key"));
+        assert!(!rules_for(&arrow).contains("generic-api-key"));
+        for name in names {
+            assert!(!rules_for(name).contains("generic-api-key"), "{name}");
+        }
+        let real = format!("token: {candidate}");
+        assert!(rules_for(&real).contains("generic-api-key"));
+        let hyphenated = format!("api_key=k3j9x-{candidate}");
+        assert!(rules_for(&hyphenated).contains("generic-api-key"));
+    }
+
+    #[test]
+    fn header_and_userinfo_rules_ignore_prose_and_placeholders() {
+        for prose in [
+            "Authorization: Forwarded",
+            "Authorization: buildAuthorizationHeader()",
+            "--header \"Authorization: AWS4-HMAC-SHA256 Credential=${AWS_KEY}\"",
+            "url: postgresql://postgres:postgres@127.0.0.1:5432/app",
+            "DATABASE_URL=postgresql://app:${DB_PASSWORD}@db:5432/app",
+            "# Format: postgresql://user:password@host:port/database",
+        ] {
+            assert!(rules_for(prose).is_empty(), "{prose}");
+        }
+        let date =
+            "curl -s https://example.invalid \\\n  -H \"X-At: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n";
+        assert!(!rules_for(date).contains("curl-auth-user"));
+        let shell = "curl -fsS -u \"$_user:$_pass\" https://example.invalid\n";
+        assert!(!rules_for(shell).contains("curl-auth-user"));
+        let candidate = synthetic();
+        let bearer = format!("Authorization: Bearer {candidate}");
+        assert!(rules_for(&bearer).contains("authorization-header"));
+        let uri = format!("postgresql://app:{candidate}@db:5432/app");
+        assert!(rules_for(&uri).contains("basic-auth-uri"));
+    }
+
+    #[test]
+    fn provider_prefixes_ignore_documentation_placeholders() {
+        let lowercase = "a".repeat(36);
+        let placeholders = [
+            ["OPENAI_API_KEY: \"sk-", "your-openai-api-key-here\""].concat(),
+            ["api-key: \"sk-", "PLACEHOLDER_REPLACE_WITH_REAL_KEY\""].concat(),
+            format!("token={}{lowercase}", "ghp_"),
+        ];
+        for placeholder in &placeholders {
+            assert!(rules_for(placeholder).is_empty(), "{placeholder}");
+        }
+        let real = format!(
+            "token={}{}",
+            "ghp_",
+            ["A7bQ9xL2mN4pR8sT", "3vW6yZ1cD5fG0hJk", "Qw3E"].concat()
+        );
+        assert!(rules_for(&real).contains("github-token"));
     }
 }
