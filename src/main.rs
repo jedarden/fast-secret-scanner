@@ -28,6 +28,13 @@ Options:
   --nul             with --spans: stdin holds NUL-separated documents, each
                     scanned on its own; every span carries its 0-based doc
                     index and offsets relative to that document
+  --serve           long-lived span service for redaction tools: read
+                    documents framed as a 4-byte big-endian length plus
+                    bytes, answer each with one line (a JSON array of
+                    {line, rule, start, end}, or a skipped object for
+                    binary or oversized input); exit 0 at end of input.
+                    Each document gets fresh rule state; matched bytes are
+                    never written
   -h, --help        show this help
   -V, --version     show the version
 ";
@@ -78,6 +85,13 @@ enum ScanOutcome {
 }
 
 fn run() -> Result<ScanOutcome, String> {
+    if env::args().skip(1).any(|argument| argument == "--serve") {
+        if env::args().count() != 2 {
+            return Err("--serve takes no other options".to_owned());
+        }
+        serve(io::stdin().lock(), io::stdout().lock()).map_err(|error| error.to_string())?;
+        return Ok(ScanOutcome::Clean);
+    }
     let Some(options) = parse_options()? else {
         return Ok(ScanOutcome::Clean);
     };
@@ -263,6 +277,52 @@ fn parse_options() -> Result<Option<Options>, String> {
         path_label,
         paths,
     }))
+}
+
+/// Largest document `--serve` scans; larger ones are answered as skipped.
+const SERVE_MAX_DOCUMENT: u32 = 64 * 1024 * 1024;
+
+/// The `--serve` loop: one framed document in, one response line out, until
+/// end of input. A client holding many short texts (every field of a bead
+/// store) pays one process start instead of one per text.
+fn serve(mut input: impl Read, mut output: impl io::Write) -> io::Result<()> {
+    loop {
+        let mut header = [0_u8; 4];
+        match input.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        let length = u32::from_be_bytes(header);
+        let response = if length > SERVE_MAX_DOCUMENT {
+            io::copy(&mut (&mut input).take(u64::from(length)), &mut io::sink())?;
+            "{\"skipped\":\"oversized\"}".to_owned()
+        } else {
+            let mut document = vec![0_u8; length as usize];
+            input.read_exact(&mut document)?;
+            let mut scanner = Scanner::with_max_bytes(u64::from(SERVE_MAX_DOCUMENT));
+            scanner.scan_bytes("<serve>", &document);
+            document.fill(0);
+            if scanner.skips().binary > 0 {
+                "{\"skipped\":\"binary\"}".to_owned()
+            } else {
+                let entries: Vec<String> = scanner
+                    .spans()
+                    .iter()
+                    .map(|span| {
+                        format!(
+                            "{{\"line\":{},\"rule\":\"{}\",\"start\":{},\"end\":{}}}",
+                            span.line, span.rule, span.start, span.end
+                        )
+                    })
+                    .collect();
+                format!("[{}]", entries.join(","))
+            }
+        };
+        output.write_all(response.as_bytes())?;
+        output.write_all(b"\n")?;
+        output.flush()?;
+    }
 }
 
 /// Scan NUL-separated documents independently (no rule state carries from

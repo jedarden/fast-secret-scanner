@@ -516,3 +516,57 @@ fn nul_separated_documents_are_scanned_independently() {
         .expect("execute scanner");
     assert_eq!(refused.status.code(), Some(2), "--nul requires --spans");
 }
+
+#[test]
+fn serve_answers_each_framed_document_on_one_line() {
+    use std::io::{BufRead, BufReader};
+    let candidate = ["A7bQ9xL2", "mN4pR8sT", "3vW6yZ1c", "D5fG0hJk"].concat();
+    let documents: Vec<Vec<u8>> = vec![
+        b"clean".to_vec(),
+        format!("token = {candidate}").into_bytes(),
+        b"bin\0ary".to_vec(),
+        Vec::new(),
+    ];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("execute scanner");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let mut responses = Vec::new();
+    for document in &documents {
+        let length = u32::try_from(document.len()).expect("small document");
+        stdin
+            .write_all(&length.to_be_bytes())
+            .expect("write header");
+        stdin.write_all(document).expect("write document");
+        stdin.flush().expect("flush");
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("read response");
+        assert!(
+            !line.contains(&candidate),
+            "serve must never write matched bytes"
+        );
+        responses.push(line.trim().to_owned());
+    }
+    drop(stdin);
+    assert!(child.wait().expect("scanner exits").success());
+    let start = documents[1]
+        .windows(candidate.len())
+        .position(|window| window == candidate.as_bytes())
+        .expect("planted");
+    assert_eq!(
+        responses,
+        [
+            "[]".to_owned(),
+            format!(
+                "[{{\"line\":1,\"rule\":\"generic-api-key\",\"start\":{start},\"end\":{}}}]",
+                start + candidate.len()
+            ),
+            "{\"skipped\":\"binary\"}".to_owned(),
+            "[]".to_owned(),
+        ]
+    );
+}
