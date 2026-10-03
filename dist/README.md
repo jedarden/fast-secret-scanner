@@ -57,3 +57,11 @@ static target command from commit
 bead-rs redaction; detection is unchanged from 0.2.4. Its SHA-256 is
 `36eeae16d378cbce32f8e77ee4689460896e491c03812ab1e4d27f08c8a1c610`. Installed as `~/.local/bin/secret-scanner` on codinghome; the
 Forgejo pin is still `0.2.3` (see 0.2.4 above).
+
+## 0.2.6 (batch spans, fss-40731332)
+
+`secret-scanner-v0.2.6-x86_64-unknown-linux-musl` is built with the same
+static target command from commit `ce75498e36ca9be573623bdc375192d5ccb76a1f`. It adds `--stdin --spans --nul`
+(NUL-separated documents, each scanned on its own). Detection is unchanged
+from 0.2.4. Its SHA-256 is `ce72ae68acfa2d9cf59b6c8233ca8a4257608b309e0a798c134aa6ac2aa2ae71`. Installed as `~/.local/bin/secret-scanner`
+on codinghome; the Forgejo pin is still `0.2.3`.
