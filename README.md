@@ -67,6 +67,9 @@ some-producer | secret-scanner --stdin --path-label generated.txt
 # The matched bytes are never printed (bead-rs uses this to redact exactly
 # what this scanner blocks).
 some-producer | secret-scanner --stdin --spans
+# Many documents in one process: NUL-separated input, each scanned on its
+# own; every span carries its document index.
+printf 'first\0second' | secret-scanner --stdin --spans --nul
 ```
 
 Minimal `.git/hooks/pre-commit`:

@@ -471,3 +471,48 @@ fn spans_locate_stdin_findings_without_printing_them() {
         .expect("execute scanner");
     assert_eq!(refused.status.code(), Some(2), "--spans requires --stdin");
 }
+
+#[test]
+fn nul_separated_documents_are_scanned_independently() {
+    let candidate = ["A7bQ9xL2", "mN4pR8sT", "3vW6yZ1c", "D5fG0hJk"].concat();
+    let documents = [
+        "clean text".to_owned(),
+        format!("notes: token = {candidate}"),
+        // A Secret header and a data block in different documents must not
+        // combine: each document starts with fresh rule state.
+        "kind: Secret".to_owned(),
+        ["data:\n  value: ", "QWJjZGVmR2hpSmtMbW5PcFFy"].concat(),
+    ];
+    let input = documents.join("\0");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--stdin", "--spans", "--nul"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("execute scanner");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("write input");
+    let output = child.wait_with_output().expect("scanner exits");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("scanner output is UTF-8");
+    assert!(!stdout.contains(&candidate));
+    let expected_start = documents[1].find(&candidate).expect("planted");
+    assert_eq!(
+        stdout.trim(),
+        format!(
+            "[{{\"doc\":1,\"line\":1,\"rule\":\"generic-api-key\",\"start\":{expected_start},\"end\":{}}}]",
+            expected_start + candidate.len()
+        )
+    );
+
+    let refused = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--stdin", "--nul"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("execute scanner");
+    assert_eq!(refused.status.code(), Some(2), "--nul requires --spans");
+}

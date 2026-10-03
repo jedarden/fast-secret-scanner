@@ -25,6 +25,9 @@ Options:
   --spans           with --stdin: print a JSON array of {line, rule, start,
                     end} byte ranges (offsets into the input) instead of
                     path:line:rule; matched bytes are never printed
+  --nul             with --spans: stdin holds NUL-separated documents, each
+                    scanned on its own; every span carries its 0-based doc
+                    index and offsets relative to that document
   -h, --help        show this help
   -V, --version     show the version
 ";
@@ -39,11 +42,18 @@ enum Mode {
     Paths,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SpanOutput {
+    Off,
+    Input,
+    Documents,
+}
+
 struct Options {
     mode: Mode,
     quiet: bool,
     summary: bool,
-    spans: bool,
+    spans: SpanOutput,
     max_bytes: u64,
     path_label: String,
     paths: Vec<PathBuf>,
@@ -81,6 +91,10 @@ fn run() -> Result<ScanOutcome, String> {
             scan_staged_patch(&mut scanner, &patch).map_err(|error| error.to_string())?;
         }
         Mode::Tracked => scanner.scan_tracked().map_err(|error| error.to_string())?,
+        Mode::Stdin if options.spans == SpanOutput::Documents => {
+            let content = read_limited(io::stdin().lock(), options.max_bytes.min(MAX_PATCH_BYTES))?;
+            return Ok(print_document_spans(&content, options.max_bytes));
+        }
         Mode::Stdin => {
             let content = read_limited(io::stdin().lock(), options.max_bytes.min(MAX_PATCH_BYTES))?;
             scanner.scan_bytes(&options.path_label, &content);
@@ -101,7 +115,7 @@ fn run() -> Result<ScanOutcome, String> {
     let summary = scanner.summary();
     let spans = scanner.spans();
     let findings = scanner.findings();
-    if options.spans {
+    if options.spans == SpanOutput::Input {
         // Rule IDs are static ASCII identifiers; offsets are integers. No
         // byte of the scanned input reaches this output.
         let entries: Vec<String> = spans
@@ -170,6 +184,7 @@ fn parse_options() -> Result<Option<Options>, String> {
     let mut quiet = false;
     let mut summary = false;
     let mut spans = false;
+    let mut nul = false;
     let mut max_bytes = 10_000_000_u64;
     let mut path_label = "<stdin>".to_owned();
     let mut paths = Vec::new();
@@ -185,6 +200,7 @@ fn parse_options() -> Result<Option<Options>, String> {
             "--quiet" => quiet = true,
             "--summary" => summary = true,
             "--spans" => spans = true,
+            "--nul" => nul = true,
             "--path-label" => {
                 path_label = arguments
                     .next()
@@ -229,6 +245,14 @@ fn parse_options() -> Result<Option<Options>, String> {
     if spans && mode != Mode::Stdin {
         return Err("--spans requires --stdin".to_owned());
     }
+    if nul && !spans {
+        return Err("--nul requires --spans".to_owned());
+    }
+    let spans = match (spans, nul) {
+        (false, _) => SpanOutput::Off,
+        (true, false) => SpanOutput::Input,
+        (true, true) => SpanOutput::Documents,
+    };
 
     Ok(Some(Options {
         mode,
@@ -239,6 +263,33 @@ fn parse_options() -> Result<Option<Options>, String> {
         path_label,
         paths,
     }))
+}
+
+/// Scan NUL-separated documents independently (no rule state carries from
+/// one document to the next) and print every span with its document index.
+/// Offsets are relative to the document. Matched bytes are never printed.
+fn print_document_spans(content: &[u8], max_bytes: u64) -> ScanOutcome {
+    let mut entries = Vec::new();
+    let mut skipped = false;
+    for (doc, document) in content.split(|byte| *byte == 0).enumerate() {
+        let mut scanner = Scanner::with_max_bytes(max_bytes);
+        scanner.scan_bytes("<stdin>", document);
+        skipped |= !scanner.skips().is_empty();
+        for span in scanner.spans() {
+            entries.push(format!(
+                "{{\"doc\":{doc},\"line\":{},\"rule\":\"{}\",\"start\":{},\"end\":{}}}",
+                span.line, span.rule, span.start, span.end
+            ));
+        }
+    }
+    println!("[{}]", entries.join(","));
+    if !entries.is_empty() {
+        ScanOutcome::Findings
+    } else if skipped {
+        ScanOutcome::UnsupportedBinary
+    } else {
+        ScanOutcome::Clean
+    }
 }
 
 fn printable_path(path: &str) -> String {
