@@ -47,3 +47,13 @@ It is installed as `~/.local/bin/secret-scanner` on codinghome. The Forgejo
 GitOps init script still pins `0.2.3`; repin it with this source commit and
 digest before turning content scanning back on in the pre-receive gate
 (declarative-config `SECRET_SCAN_ENABLED`, bead declarat-f3f35f78).
+
+## 0.2.5 (value-free spans, fss-41a05ca8)
+
+`secret-scanner-v0.2.5-x86_64-unknown-linux-musl` is built with the same
+static target command from commit
+`686f49a9fcb069f8e17f4ff5cfac42c4d95d7f7b`. It adds
+`--stdin --spans` (JSON byte offsets per finding, never the bytes) for
+bead-rs redaction; detection is unchanged from 0.2.4. Its SHA-256 is
+`36eeae16d378cbce32f8e77ee4689460896e491c03812ab1e4d27f08c8a1c610`. Installed as `~/.local/bin/secret-scanner` on codinghome; the
+Forgejo pin is still `0.2.3` (see 0.2.4 above).
