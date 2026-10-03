@@ -61,6 +61,12 @@ secret-scanner path/to/file path/to/directory
 
 # Scan a stream and give findings a safe label.
 some-producer | secret-scanner --stdin --path-label generated.txt
+
+# For redaction tools that already hold the text: where each finding sits,
+# as a JSON array of {line, rule, start, end} byte offsets into the input.
+# The matched bytes are never printed (bead-rs uses this to redact exactly
+# what this scanner blocks).
+some-producer | secret-scanner --stdin --spans
 ```
 
 Minimal `.git/hooks/pre-commit`:

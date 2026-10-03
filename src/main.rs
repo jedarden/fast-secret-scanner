@@ -22,6 +22,9 @@ Options:
   --max-bytes N     maximum explicit, tracked, untracked, or stdin file size
   --quiet           suppress path:line:rule output
   --summary         print counts by rule to stderr
+  --spans           with --stdin: print a JSON array of {line, rule, start,
+                    end} byte ranges (offsets into the input) instead of
+                    path:line:rule; matched bytes are never printed
   -h, --help        show this help
   -V, --version     show the version
 ";
@@ -40,6 +43,7 @@ struct Options {
     mode: Mode,
     quiet: bool,
     summary: bool,
+    spans: bool,
     max_bytes: u64,
     path_label: String,
     paths: Vec<PathBuf>,
@@ -95,8 +99,22 @@ fn run() -> Result<ScanOutcome, String> {
 
     let skips = scanner.skips();
     let summary = scanner.summary();
+    let spans = scanner.spans();
     let findings = scanner.findings();
-    if !options.quiet {
+    if options.spans {
+        // Rule IDs are static ASCII identifiers; offsets are integers. No
+        // byte of the scanned input reaches this output.
+        let entries: Vec<String> = spans
+            .iter()
+            .map(|span| {
+                format!(
+                    "{{\"line\":{},\"rule\":\"{}\",\"start\":{},\"end\":{}}}",
+                    span.line, span.rule, span.start, span.end
+                )
+            })
+            .collect();
+        println!("[{}]", entries.join(","));
+    } else if !options.quiet {
         for finding in &findings {
             println!(
                 "{}:{}:{}",
@@ -151,6 +169,7 @@ fn parse_options() -> Result<Option<Options>, String> {
     let mut mode = Mode::Staged;
     let mut quiet = false;
     let mut summary = false;
+    let mut spans = false;
     let mut max_bytes = 10_000_000_u64;
     let mut path_label = "<stdin>".to_owned();
     let mut paths = Vec::new();
@@ -165,6 +184,7 @@ fn parse_options() -> Result<Option<Options>, String> {
             "--stdin" => mode = Mode::Stdin,
             "--quiet" => quiet = true,
             "--summary" => summary = true,
+            "--spans" => spans = true,
             "--path-label" => {
                 path_label = arguments
                     .next()
@@ -206,11 +226,15 @@ fn parse_options() -> Result<Option<Options>, String> {
     if mode != Mode::Stdin && path_label != "<stdin>" {
         return Err("--path-label requires --stdin".to_owned());
     }
+    if spans && mode != Mode::Stdin {
+        return Err("--spans requires --stdin".to_owned());
+    }
 
     Ok(Some(Options {
         mode,
         quiet,
         summary,
+        spans,
         max_bytes,
         path_label,
         paths,

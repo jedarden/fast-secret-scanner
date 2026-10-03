@@ -26,6 +26,18 @@ pub struct Finding {
     pub rule: &'static str,
 }
 
+/// Where a finding's sensitive bytes sit in content scanned with
+/// [`Scanner::scan_bytes`]: half-open byte offsets from the start of that
+/// content. A span locates bytes for a caller that already holds them (a
+/// redaction tool); it never carries the bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Span {
+    pub line: usize,
+    pub start: usize,
+    pub end: usize,
+    pub rule: &'static str,
+}
+
 #[derive(Default)]
 struct FileState {
     last_line: usize,
@@ -41,6 +53,7 @@ pub struct Scanner {
     unsafe_paths: HashSet<String>,
     skips: ScanSkips,
     max_bytes: u64,
+    spans: Vec<Span>,
 }
 
 impl Default for Scanner {
@@ -58,6 +71,7 @@ impl Scanner {
             unsafe_paths: HashSet::new(),
             skips: ScanSkips::default(),
             max_bytes: DEFAULT_MAX_BYTES,
+            spans: Vec::new(),
         }
     }
 
@@ -80,8 +94,10 @@ impl Scanner {
         }
 
         let mut state = FileState::default();
+        let mut offset = 0;
         for (index, line) in content.split(|byte| *byte == b'\n').enumerate() {
-            self.scan_line(path, index + 1, line, &mut state);
+            self.scan_line(path, index + 1, line, Some(offset), &mut state);
+            offset += line.len() + 1;
         }
     }
 
@@ -92,7 +108,7 @@ impl Scanner {
         line: &[u8],
         state: &mut StagedFileState,
     ) {
-        self.scan_line(path, line_number, line, &mut state.inner);
+        self.scan_line(path, line_number, line, None, &mut state.inner);
     }
 
     /// Scan one file or recursively scan one directory.
@@ -141,6 +157,16 @@ impl Scanner {
         }
         self.findings.sort();
         self.findings
+    }
+
+    /// Byte spans of every detection in content passed to
+    /// [`Scanner::scan_bytes`], sorted by position. Staged and patch scans
+    /// have no whole-content offsets and contribute none.
+    #[must_use]
+    pub fn spans(&self) -> Vec<Span> {
+        let mut spans = self.spans.clone();
+        spans.sort_by_key(|span| (span.start, span.end, span.rule));
+        spans
     }
 
     #[must_use]
@@ -195,7 +221,14 @@ impl Scanner {
         Ok(())
     }
 
-    fn scan_line(&mut self, path: &str, line_number: usize, line: &[u8], state: &mut FileState) {
+    fn scan_line(
+        &mut self,
+        path: &str,
+        line_number: usize,
+        line: &[u8],
+        line_offset: Option<usize>,
+        state: &mut FileState,
+    ) {
         if line_number > state.last_line.saturating_add(20) || line_number <= state.last_line {
             state.curl_line = None;
             state.kubernetes_kind = None;
@@ -239,6 +272,23 @@ impl Scanner {
                     .any(|part| part == detection.sensitive)
             {
                 self.unsafe_paths.insert(path.to_owned());
+            }
+            if let Some(line_offset) = line_offset {
+                // Every detector returns a subslice of `line`, so its
+                // position follows from the two addresses; no byte is copied.
+                let start =
+                    (detection.sensitive.as_ptr() as usize).saturating_sub(line.as_ptr() as usize);
+                if start + detection.sensitive.len() <= line.len() {
+                    let span = Span {
+                        line: line_number,
+                        start: line_offset + start,
+                        end: line_offset + start + detection.sensitive.len(),
+                        rule: detection.rule,
+                    };
+                    if !self.spans.contains(&span) {
+                        self.spans.push(span);
+                    }
+                }
             }
             self.record(path, line_number, detection.rule);
         }
