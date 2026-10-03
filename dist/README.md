@@ -33,3 +33,17 @@ The Forgejo GitOps pin names source commit
 `555871ec0f77f6687379bab73dd80ecde72cb05f` and this digest in
 `declarative-config` commit `382bb6c5aa03ac9147ddf8ba839321a78674b63e`.
 The server retains pinned Gitleaks 8.30.1 as the comprehensive gate.
+
+## 0.2.4 (false-positive narrowing, fss-eeeb789c)
+
+`secret-scanner-v0.2.4-x86_64-unknown-linux-musl` is built with the same
+static target command from commit
+`49e5b894e97241d0aaa1475baaadec8f938693a2`. It stops flagging every
+ExternalSecret / ClusterSecretStore / SealedSecret manifest, prose in bead
+checkpoints, and template placeholders (845 findings to 3 on the measured
+corpora; see `research/rule-coverage.md`). Its SHA-256 is
+`8c649fc85eb8ca817ee45a1e9efa8e448eb746b4297dca4f6708d12d3e74c79e`.
+It is installed as `~/.local/bin/secret-scanner` on codinghome. The Forgejo
+GitOps init script still pins `0.2.3`; repin it with this source commit and
+digest before turning content scanning back on in the pre-receive gate
+(declarative-config `SECRET_SCAN_ENABLED`, bead declarat-f3f35f78).
