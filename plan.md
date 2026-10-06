@@ -1,5 +1,26 @@
 # secret-scanner delivery plan
 
+## Release-blocking curl password correction — 2026-10-06
+
+Owner: `fss-2272b3b4`, linked to bead-rs release owner `beadrs-b3059276`.
+
+- Qualify the password alone; usernames cannot supply missing credential evidence.
+- Preserve opaque credential positives, multiline curl context, exact password
+  spans and value-free raw/JSON-text output; reject short/prose/placeholder controls.
+- Update coverage, run formatting, all-feature Clippy, all tests, release build
+  and the staged end-to-end benchmark before committing scanner 0.2.8.
+- Install checksum-verified scanner bytes only on codinghome and lab for the
+  bead-rs parity gate. Do not activate server/global hooks or scrub real data.
+- Re-run the application scan with the corrected organization scanner. Existing
+  findings require independent dispositions; a rule correction is not a blanket
+  false-positive declaration or permission to clear quarantine manually.
+- Independent review caught an opaque alphabetic separator regression and an
+  inherited JSON multiline boundary defect. Correct both with explicit controls:
+  validated complete JSON, semantic password evidence, exact encoded spans,
+  literal backslash preservation and ordinary raw fallback on invalid JSON.
+  The application supplies a fully quoted second JSON view under its reviewed
+  organization-scanner contract; no new framing protocol or scanner option.
+
 ## Phase 1 — Benchmark GIF storytelling
 
 Owning bead: `fss-501e2518`
@@ -223,6 +244,10 @@ binary. Keep the narrow fast detector and the pinned Gitleaks backstop.
   patch input never exits clean.
 - Finding output and agent feedback never contain a matched value, even when it
   also appears in a filename or standard-input path label.
+- The scoped `fss-2272b3b4` detector correction also preserves that invariant
+  for curl passwords encoded in valid JSON when the path label contains their
+  semantic form. Runtime tests cover raw, quoted and object inputs; no real
+  credential cleanup or broad hook rollout is admitted by this correction.
 - Oversized or truncated text input fails closed. Unsupported binary input has
   a distinct status and proceeds to the pinned Gitleaks gate. Bounded input
   preserves the latency goal.

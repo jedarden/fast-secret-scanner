@@ -34,6 +34,17 @@ length. Generic assignments require a credential-like identifier, a nearby
 assignment operator, a bounded token, letters plus digits, Shannon entropy, and
 placeholder rejection.
 
+Curl password qualification is independent of the username. For a complete
+valid JSON document, its bounded curl token window is decoded with a byte-range
+map before measuring password evidence. `serde::de::IgnoredAny` validates the
+document without retaining parsed values; it is not a prefix/quote guess.
+Actual escaped LF/CR/tab delimit the semantic password, while paired escaped
+backslashes remain password material. Findings still borrow only the exact
+encoded input range. Ordinary raw curl input is unchanged. Invalid JSON, or
+JSON beyond the parser's normal depth bound, keeps raw scanning and does not
+gain a clean-scan exemption. Other detectors retain their existing byte-oriented
+rules; this does not claim general recursive JSON decoding.
+
 The implementation intentionally avoids a runtime regex compiler. With this
 small rule set, bounded byte searches are easier to audit and minimize process
 startup. If the rule count grows enough for repeated scans to dominate, the
@@ -48,6 +59,12 @@ or input label must be replaced with `<redacted-path>`; it is never retained in
 a finding, log, or report. Known provider shapes in a path also trigger the
 replacement. CLI output escapes control characters in safe paths and prints
 no source line.
+
+For an already detected curl password containing JSON escapes, path safety
+also checks its bounded decoded alias. Only the safety flag survives; findings
+and span offsets remain encoded-source-relative. A raw backslash literal may
+conservatively hide a possible decoded alias in the label without suppressing
+any detection. Ordinary safe labels remain unchanged.
 
 ## Known parser boundary
 

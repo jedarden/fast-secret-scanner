@@ -6,6 +6,117 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn curl_password_spans_remain_value_free_in_raw_and_json_text() {
+    let positives = [
+        candidate(),
+        ["aBcD", "-", "eFgH"].concat(),
+        ["abcdefghi", "+", "jklmnopqr", "+", "stuvwxyz"].concat(),
+    ];
+    let cases = ["word", "alpha", "ordinary", "${PASSWORD}"]
+        .into_iter()
+        .map(|password| (password, false))
+        .chain(positives.iter().map(|password| (password.as_str(), true)));
+    for (password, detected) in cases {
+        let line = format!("curl --user operator:{password} https://example.invalid");
+        for text in [line.clone(), format!("{{\"notes\":\"{line}\"}}")] {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+                .args(["--stdin", "--spans"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start scanner");
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(text.as_bytes())
+                .expect("write synthetic text");
+            let result = child.wait_with_output().expect("scan synthetic text");
+            assert_eq!(result.status.code(), Some(i32::from(detected)));
+            let stdout = String::from_utf8(result.stdout).expect("UTF-8 output");
+            if detected {
+                assert!(!stdout.contains(password));
+                assert!(!String::from_utf8_lossy(&result.stderr).contains(password));
+                let start = text.find(password).expect("planted value");
+                assert!(stdout.contains("curl-auth-user"));
+                assert!(stdout.contains(&format!("\"start\":{start}")));
+                assert!(stdout.contains(&format!("\"end\":{}", start + password.len())));
+            } else {
+                assert_eq!(stdout.trim(), "[]");
+            }
+        }
+    }
+}
+
+#[test]
+fn framed_curl_json_whitespace_and_literal_backslashes_have_exact_spans() {
+    let positive = candidate();
+    let mut cases = Vec::new();
+    let mut passwords = vec![("alpha".to_owned(), false), (positive.clone(), true)];
+    for count in 1..=4 {
+        for tail in ['n', 'r', 't'] {
+            passwords.push((format!("gH3{}{}jK4", "\\".repeat(count), tail), true));
+        }
+    }
+    for (password, detected) in &passwords {
+        for whitespace in ['\n', '\r', '\t'] {
+            let raw =
+                format!("curl --user operator:{password}{whitespace}  https://example.invalid");
+            let encoded = serde_json::to_string(password).expect("encode password");
+            let encoded = &encoded[1..encoded.len() - 1];
+            for (document, planted) in [
+                (raw.clone(), password.as_str()),
+                (serde_json::to_string(&raw).expect("encode string"), encoded),
+                (serde_json::json!({"notes": raw}).to_string(), encoded),
+            ] {
+                let start = document.find(planted).expect("planted password");
+                cases.push((document, *detected, start, start + planted.len()));
+            }
+        }
+    }
+    // Invalid/truncated JSON must retain raw credential scanning.
+    let invalid = format!("{{\"notes\":\"curl --user operator:{positive} trailing");
+    let start = invalid.find(&positive).expect("planted");
+    cases.push((invalid, true, start, start + positive.len()));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start framed scanner");
+    let mut framed = Vec::new();
+    for (document, _, _, _) in &cases {
+        framed.extend_from_slice(
+            &u32::try_from(document.len())
+                .expect("bounded document")
+                .to_be_bytes(),
+        );
+        framed.extend_from_slice(document.as_bytes());
+    }
+    let mut input = child.stdin.take().expect("stdin");
+    let writer = std::thread::spawn(move || input.write_all(&framed).expect("framed input"));
+    let output = child.wait_with_output().expect("finish framed scanner");
+    writer.join().expect("input writer");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert!(!stdout.contains(&positive));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&positive));
+    assert_eq!(stdout.lines().count(), cases.len());
+    for (response, (_, detected, start, end)) in stdout.lines().zip(cases) {
+        let spans: serde_json::Value = serde_json::from_str(response).expect("span response");
+        let spans = spans.as_array().expect("array");
+        assert_eq!(spans.len(), usize::from(detected));
+        if detected {
+            assert_eq!(spans[0]["rule"], "curl-auth-user");
+            assert_eq!(spans[0]["start"], start);
+            assert_eq!(spans[0]["end"], end);
+        }
+    }
+}
+
+#[test]
 fn staged_cli_rejects_without_printing_the_value() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -47,6 +158,65 @@ fn staged_cli_rejects_without_printing_the_value() {
     assert!(!stdout.contains(&candidate));
 
     fs::remove_dir_all(&repository).expect("remove exact temporary repository");
+}
+
+#[test]
+fn encoded_curl_password_in_semantic_or_encoded_label_is_redacted() {
+    let password = candidate();
+    let mut encoded = String::new();
+    for character in password.chars() {
+        write!(encoded, "\\u{:04x}", u32::from(character)).expect("encode scalar");
+    }
+    let raw = format!("curl --user operator:{password} https://example.invalid");
+    let encoded_line = format!("curl --user operator:{encoded} https://example.invalid");
+    let documents = [
+        raw.clone(),
+        serde_json::to_string(&raw).expect("quoted raw"),
+        format!("\"{encoded_line}\""),
+        format!("{{\"notes\":\"{encoded_line}\"}}"),
+    ];
+    for document in documents {
+        for label in [
+            format!("fixture-{password}.txt"),
+            format!("fixture-{encoded}.txt"),
+            "safe-fixture.txt".to_owned(),
+        ] {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+                .args(["--stdin", "--path-label", &label])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start labeled scanner");
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(document.as_bytes())
+                .expect("write runtime fixture");
+            let output = child.wait_with_output().expect("scan labeled input");
+            assert_eq!(output.status.code(), Some(1));
+            assert!(
+                !output
+                    .stdout
+                    .windows(password.len())
+                    .any(|part| part == password.as_bytes())
+            );
+            assert!(
+                !output
+                    .stderr
+                    .windows(password.len())
+                    .any(|part| part == password.as_bytes())
+            );
+            let text = String::from_utf8(output.stdout).expect("UTF-8 output");
+            if label == "safe-fixture.txt" {
+                assert!(text.contains("safe-fixture.txt:1:curl-auth-user"));
+            } else if document.contains(&encoded) || label.contains(&password) {
+                assert!(text.contains("<redacted-path>:1:curl-auth-user"));
+                assert!(!text.contains(&encoded));
+            }
+        }
+    }
 }
 
 #[test]

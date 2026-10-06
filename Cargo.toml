@@ -1,11 +1,15 @@
 [package]
 name = "secret-scanner"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 rust-version = "1.85"
 description = "A low-latency staged-diff tripwire for common secret patterns"
 license = "MIT"
 repository = "https://git.ardenone.com/jedarden/fast-secret-scanner"
+
+[dependencies]
+serde = "1.0"
+serde_json = "1.0"
 
 [profile.release]
 codegen-units = 1

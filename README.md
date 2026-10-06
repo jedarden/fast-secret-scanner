@@ -133,7 +133,9 @@ rule. This is evidence about that corpus, not a general recall estimate.
 - One `git diff --cached --unified=0` process supplies the default scan.
 - Only added lines are inspected.
 - Bounded byte checks replace a general runtime rule engine.
-- The dependency-free binary is single-threaded and does no recursive decode.
+- The binary is single-threaded. Serde validates complete JSON context for
+  curl password spans; only that bounded capture is decoded, not arbitrary
+  recursively encoded content.
 - Detectors return rule IDs, never the candidate text.
 
 ## Documentation map

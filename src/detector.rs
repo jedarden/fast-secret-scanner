@@ -273,6 +273,22 @@ impl Scanner {
             {
                 self.unsafe_paths.insert(path.to_owned());
             }
+            // A JSON-encoded curl password can also occur in a label in its
+            // semantic form. Check that bounded alias without retaining it.
+            // Raw backslash literals may conservatively hide a decoded alias;
+            // this affects only path safety, never findings or byte spans.
+            if detection.rule == "curl-auth-user"
+                && detection.sensitive.contains(&b'\\')
+                && decode_json_fragment(detection.sensitive).is_some_and(|fragment| {
+                    !fragment.bytes.is_empty()
+                        && path
+                            .as_bytes()
+                            .windows(fragment.bytes.len())
+                            .any(|part| part == fragment.bytes)
+                })
+            {
+                self.unsafe_paths.insert(path.to_owned());
+            }
             if let Some(line_offset) = line_offset {
                 // Every detector returns a subslice of `line`, so its
                 // position follows from the two addresses; no byte is copied.
@@ -792,13 +808,23 @@ fn detect_curl_user<'a>(line: &'a [u8], curl_context: bool, detections: &mut Vec
     let Some(position) = position else {
         return;
     };
-    let rest = trim_value_prefix(&line[position..]);
-    let length = rest
+    let rest = &line[position..];
+    let decoded = if curl_json_context(line, position) {
+        decode_json_fragment(rest)
+    } else {
+        None
+    };
+    let semantic = decoded
+        .as_ref()
+        .map_or(rest, |fragment| fragment.bytes.as_slice());
+    let value = trim_value_prefix(semantic);
+    let prefix_length = semantic.len() - value.len();
+    let length = value
         .iter()
         .take(256)
         .take_while(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'\'' | b'"'))
         .count();
-    let candidate = &rest[..length];
+    let candidate = &value[..length];
     let password = candidate
         .iter()
         .position(|byte| *byte == b':')
@@ -807,17 +833,162 @@ fn detect_curl_user<'a>(line: &'a [u8], curl_context: bool, detections: &mut Vec
     if candidate.contains(&b'%') || is_placeholder_reference(password) {
         return;
     }
-    if candidate.len() >= 7
-        && candidate.contains(&b':')
-        && shannon_entropy(candidate) >= 2.0
-        && !contains_stopword(candidate)
+    // The username is context, not password evidence. Its entropy must not
+    // turn an empty/short password or an ordinary documentation word into a
+    // credential. Keep opaque mixed-case and symbol-bearing passwords too.
+    let case_changes = password
+        .windows(2)
+        .filter(|pair| {
+            pair.iter().all(u8::is_ascii_alphabetic)
+                && pair[0].is_ascii_lowercase() != pair[1].is_ascii_lowercase()
+        })
+        .count();
+    let token_like = password.iter().any(u8::is_ascii_digit)
+        || password.iter().any(|byte| !byte.is_ascii_alphanumeric())
+        || password.len() >= 24
+        || case_changes >= 3;
+    // A generic identifier predicate also accepts alphabetic base64 and
+    // strongly alternating mixed-case segments. Those were detected before
+    // this correction and must not be discarded as documentation names.
+    let short_name = password.len() < 24
+        && case_changes < 3
+        && !password
+            .iter()
+            .any(|byte| matches!(byte, b'+' | b'/' | b'='))
+        && is_identifier_shaped(password);
+    if password.len() >= 6
+        && token_like
+        && shannon_entropy(password) >= 2.0
+        && !contains_stopword(password)
+        && !short_name
     {
-        let password_start = candidate.iter().position(|byte| *byte == b':').unwrap_or(0) + 1;
+        let sensitive = if let Some(fragment) = &decoded {
+            let password_start = prefix_length + length - password.len();
+            let password_end = prefix_length + length;
+            &rest[fragment.ranges[password_start].0..fragment.ranges[password_end - 1].1]
+        } else {
+            &rest[prefix_length + length - password.len()..prefix_length + length]
+        };
         detections.push(Detection {
             rule: "curl-auth-user",
-            sensitive: &candidate[password_start..],
+            sensitive,
         });
     }
+}
+
+/// JSON semantics are trusted only for a complete valid document. `IgnoredAny`
+/// validates structure without retaining parsed credential values. Invalid
+/// JSON keeps the ordinary raw detector rather than becoming a clean bypass.
+fn curl_json_context(line: &[u8], position: usize) -> bool {
+    if !line
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| matches!(byte, b'{' | b'[' | b'"'))
+    {
+        return false;
+    }
+    let mut parser = serde_json::Deserializer::from_slice(line);
+    if <serde::de::IgnoredAny as serde::Deserialize>::deserialize(&mut parser).is_err()
+        || parser.end().is_err()
+    {
+        return false;
+    }
+    let mut quoted = false;
+    let mut escaped = false;
+    for byte in &line[..position] {
+        if escaped {
+            escaped = false;
+        } else if quoted && *byte == b'\\' {
+            escaped = true;
+        } else if *byte == b'"' {
+            quoted = !quoted;
+        }
+    }
+    quoted
+}
+
+struct JsonFragment {
+    bytes: Vec<u8>,
+    ranges: Vec<(usize, usize)>,
+}
+
+/// Decode at most the existing 256-source-byte curl token window. Each
+/// semantic byte points to the full encoded character/escape that produced
+/// it, so qualification never counts formatting and spans stay input-relative.
+fn decode_json_fragment(source: &[u8]) -> Option<JsonFragment> {
+    let mut result = JsonFragment {
+        bytes: Vec::new(),
+        ranges: Vec::new(),
+    };
+    let mut cursor = 0;
+    while cursor < source.len().min(256) && source[cursor] != b'"' {
+        let start = cursor;
+        let character = if source[cursor] == b'\\' {
+            cursor += 2;
+            match *source.get(start + 1)? {
+                b'"' => '"',
+                b'\\' => '\\',
+                b'/' => '/',
+                b'b' => '\u{08}',
+                b'f' => '\u{0c}',
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                b'u' => {
+                    let high = u16::from_str_radix(
+                        std::str::from_utf8(source.get(cursor..cursor + 4)?).ok()?,
+                        16,
+                    )
+                    .ok()?;
+                    cursor += 4;
+                    let scalar = if (0xd800..=0xdbff).contains(&high) {
+                        if source.get(cursor..cursor + 2)? != b"\\u" {
+                            return None;
+                        }
+                        cursor += 2;
+                        let low = u16::from_str_radix(
+                            std::str::from_utf8(source.get(cursor..cursor + 4)?).ok()?,
+                            16,
+                        )
+                        .ok()?;
+                        if !(0xdc00..=0xdfff).contains(&low) {
+                            return None;
+                        }
+                        cursor += 4;
+                        0x10000 + ((u32::from(high) - 0xd800) << 10) + u32::from(low) - 0xdc00
+                    } else {
+                        u32::from(high)
+                    };
+                    char::from_u32(scalar)?
+                }
+                _ => return None,
+            }
+        } else {
+            let width = match source[cursor] {
+                0..=0x7f => 1,
+                0xc2..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf4 => 4,
+                _ => return None,
+            };
+            let character = std::str::from_utf8(source.get(cursor..cursor + width)?)
+                .ok()?
+                .chars()
+                .next()?;
+            cursor += character.len_utf8();
+            character
+        };
+        if cursor > 256 {
+            break;
+        }
+        let mut buffer = [0_u8; 4];
+        let bytes = character.encode_utf8(&mut buffer).as_bytes();
+        result.bytes.extend_from_slice(bytes);
+        result
+            .ranges
+            .extend(std::iter::repeat_n((start, cursor), bytes.len()));
+    }
+    Some(result)
 }
 
 fn detect_private_key<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
@@ -1305,6 +1476,44 @@ mod tests {
         let rules = rules_for(&content);
         assert!(rules.contains("authorization-header"));
         assert!(rules.contains("curl-auth-user"));
+    }
+
+    #[test]
+    fn curl_password_evidence_is_independent_of_username() {
+        for user in ["operator".to_owned(), synthetic()] {
+            for password in [
+                "",
+                "word",
+                "alpha",
+                "password",
+                "Forwarded",
+                "ordinary",
+                "CHANGE_ME_32_CHARS",
+                "${PASSWORD}",
+                "$_pass",
+                "$(lookup)",
+            ] {
+                let line = format!("curl --user {user}:{password} https://example.invalid");
+                assert!(!rules_for(&line).contains("curl-auth-user"));
+            }
+        }
+        for password in [
+            synthetic(),
+            ["aB", "cD", "eF", "gH"].concat(),
+            ["aBcD", "-", "eFgH"].concat(),
+            ["abcdefghi", "+", "jklmnopqr", "+", "stuvwxyz"].concat(),
+            ["ab", "!", "Cd", "?", "ef"].concat(),
+            ["baf", "gih", "jol", "mun", "pev", "ruz", "sot", "qxy"].concat(),
+        ] {
+            for option in ["-u", "--user"] {
+                let line = format!("curl {option} operator:{password} https://example.invalid");
+                let mut detections = Vec::new();
+                detect_curl_user(line.as_bytes(), true, &mut detections);
+                assert_eq!(detections.len(), 1);
+                assert_eq!(detections[0].rule, "curl-auth-user");
+                assert_eq!(detections[0].sensitive, password.as_bytes());
+            }
+        }
     }
 
     #[test]
