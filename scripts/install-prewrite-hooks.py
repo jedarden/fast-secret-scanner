@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge synchronous secret-scanner pre-write hooks into Codex and Claude Code."""
+"""Merge synchronous secret-scanner PreToolUse hooks into Codex and Claude Code."""
 
 import argparse
 import json
@@ -11,8 +11,8 @@ import shutil
 import tempfile
 
 
-WRITE_PATTERNS = (
-    "apply_patch", "Write", "Edit", "MultiEdit", "NotebookEdit",
+TOOL_PATTERNS = (
+    "Bash", "apply_patch", "Write", "Edit", "MultiEdit", "NotebookEdit",
     "mcp__[A-Za-z0-9_-]+__(?:write|edit|append|replace|save|upload|persist)[A-Za-z0-9_]*",
     "mcp__[A-Za-z0-9_-]+__create_file[A-Za-z0-9_]*",
     "[A-Za-z0-9_.-]*(?:write_file|edit_file|apply_patch|save_file|create_file|append_file)[A-Za-z0-9_]*",
@@ -20,7 +20,7 @@ WRITE_PATTERNS = (
 
 
 def matcher(extra_tools: list[str]) -> str:
-    return "^(?:" + "|".join((*WRITE_PATTERNS, *(re.escape(name) for name in extra_tools))) + ")$"
+    return "^(?:" + "|".join((*TOOL_PATTERNS, *(re.escape(name) for name in extra_tools))) + ")$"
 
 
 def atomic_copy(source: Path, destination: Path) -> None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deny structured file writes until their proposed bytes pass secret-scanner."""
+"""Scan proposed writes and literal shell commands before agent tools run."""
 
 import json
 import os
@@ -97,6 +97,8 @@ def proposed_content(event: dict) -> list[str] | None:
         return None
     if any(key in value for key in OPAQUE_KEYS) or value.get("encoding") not in (None, "utf-8", "utf8", "text"):
         return None
+    if tool == "Bash":
+        return _strings(value.get("command"))
     if tool == "apply_patch":
         return _patch_additions(value.get("command"))
     if tool == "Write":
@@ -121,6 +123,8 @@ def decision(event: dict) -> dict:
         return deny("secret-scanner received an invalid pre-write event; write denied.")
     contents = proposed_content(event)
     if contents is None:
+        if event.get("tool_name") == "Bash":
+            return deny("secret-scanner could not inspect this shell command; execution denied.")
         return deny("secret-scanner could not inspect this structured write; use a text writer with explicit content.")
     payload = "\n".join(contents).encode("utf-8")
     if len(payload) > MAX_CONTENT_BYTES:

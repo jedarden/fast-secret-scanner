@@ -73,6 +73,26 @@ class PrewriteTests(unittest.TestCase):
                 self.assertTrue(denied(output))
                 self.assertNotIn(candidate.encode(), stdout + stderr)
 
+    def test_bash_literal_is_scanned_before_execution(self):
+        if not SCANNER.is_file():
+            self.skipTest("installed secret-scanner unavailable")
+        candidate = "".join(("ghp_", "A1b2C3d4E5f6", "G7h8I9j0K1l2", "M3n4O5p6Q7r8"))
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target.txt"
+            self.assertEqual(run_hook("Bash", {"command": "pwd"})[0], {})
+            self.assertEqual(run_hook("Bash", {"command": f"cat source > {target}"})[0], {})
+            for command in (
+                f"printf '%s\\n' '{candidate}' > {target}",
+                f"cat > {target} <<'EOF'\n{candidate}\nEOF",
+            ):
+                with self.subTest(command_shape=command.startswith("cat")):
+                    output, stdout, stderr = run_hook("Bash", {"command": command})
+                    self.assertTrue(denied(output))
+                    self.assertFalse(target.exists())
+                    self.assertNotIn(candidate.encode(), stdout + stderr)
+            self.assertTrue(denied(run_hook("Bash", {})[0]))
+            self.assertTrue(denied(run_hook("Bash", {"command": "pwd"}, Path("/does/not/exist"))[0]))
+
     def test_opaque_and_failed_scans_deny(self):
         self.assertTrue(denied(PREWRITE.decision({"tool_name": "Write", "tool_input": {"content": "clean"}})))
         opaque = [
@@ -127,6 +147,7 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("mcp__workspace__persist", config["hooks"]["PreToolUse"][1]["matcher"])
             pattern = re.compile(config["hooks"]["PreToolUse"][1]["matcher"])
             self.assertIsNotNone(pattern.fullmatch("mcp__filesystem__create_file"))
+            self.assertIsNotNone(pattern.fullmatch("Bash"))
             self.assertIsNone(pattern.fullmatch("mcp__filesystem__move_file"))
             self.assertIsNone(pattern.fullmatch("mcp__filesystem__rename_file"))
             self.assertTrue((home / ".local/share/secret-scanner/prewrite_hook.py").is_file())

@@ -90,7 +90,17 @@ oversized event, or opaque write payload denies the tool with a generic reason;
 the reason never contains matched text. Patch scans use added lines, so removing
 an existing candidate is possible. Binary or encoded structured writes are
 denied. The existing Git and server gates still apply to commits and pushes.
-Bash writes are still checked after execution by the existing adapter.
+
+The same `PreToolUse` entry matches `Bash` in both clients (including Codex
+`exec_command`) and scans the literal `tool_input.command` before it runs. It
+denies detected candidates in inline file content and heredocs without echoing
+the command or matched bytes. The hook scans all shell commands, including
+reads, because arbitrary shell syntax cannot be classified reliably as a
+write. Commands that obtain content at runtime from files, environment
+variables, subprocesses, or encoded values can still write bytes the pre-tool
+hook has not seen. The existing `PostToolUse` worktree scan reports those
+writes after execution; Git and server gates cover commits and pushes. A
+post-tool hook cannot undo a write.
 
 Contracts and trust behavior were checked against the
 [official OpenAI Docs for Codex hooks](https://learn.chatgpt.com/docs/hooks)
