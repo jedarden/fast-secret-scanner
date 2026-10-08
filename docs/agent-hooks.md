@@ -65,6 +65,33 @@ the Forgejo hook enforces novel history when local hooks are bypassed. A stop
 continuation can be exhausted by an agent that cannot remediate a finding;
 the Git gates still reject it.
 
+## Synchronous pre-write scan
+
+Install the separate pre-write adapter after the scanner binary is installed:
+
+```bash
+python3 scripts/install-prewrite-hooks.py
+python3 scripts/install-prewrite-hooks.py --apply
+```
+
+Use `--write-tool NAME` for an additional exact MCP or local writer name, and
+repeat it for multiple tools. The installer copies `hooks/prewrite_hook.py` to
+`~/.local/share/secret-scanner/` and merges one synchronous `PreToolUse` entry
+into each user configuration. It keeps the Bash commit check, post-write
+checks, Stop check, and unrelated handlers. Repeating `--apply` with the same
+options leaves both configurations unchanged. Review the new Codex hook with
+`/hooks` after installation.
+
+For `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `apply_patch`, and recognizable
+MCP or local text writers, the adapter scans the proposed text through the
+installed `secret-scanner --stdin` before the tool runs. It passes a fixed safe
+path label and no candidate in command arguments. A finding, scanner error,
+oversized event, or opaque write payload denies the tool with a generic reason;
+the reason never contains matched text. Patch scans use added lines, so removing
+an existing candidate is possible. Binary or encoded structured writes are
+denied. The existing Git and server gates still apply to commits and pushes.
+Bash writes are still checked after execution by the existing adapter.
+
 Contracts and trust behavior were checked against the
 [official OpenAI Docs for Codex hooks](https://learn.chatgpt.com/docs/hooks)
 and the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks).
