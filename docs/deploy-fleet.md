@@ -46,6 +46,18 @@ Deployment source is `declarative-config`:
 - `tools/forgejo-secret-scan/rollout.sh`: owner inventory and exact hook audit.
 - `tools/forgejo-secret-scan/test-first-push-guard.sh`: local bare-Git creation test.
 
+Run `scripts/test-forgejo-pre-receive.sh` from this repository after building
+`secret-scanner`. It copies the exact canonical hook bytes from
+`$HOME/declarative-config/tools/forgejo-secret-scan/pre-receive` into a local
+bare repository and pushes through a Forgejo-style dispatcher. It checks that
+previously accepted history is excluded, new synthetic candidates are blocked
+without disclosure, clean pushes succeed, both scanners fail closed on missing
+binaries, errors, and timeouts, and Forgejo and custom sibling hooks can veto
+the push. Set `DECLARATIVE_CONFIG_DIR` and `FASTSCAN_BIN` if those paths differ;
+the test runs the real Rust scanner with a controlled Gitleaks double to check
+the pinned invocation and failure handling. It sets `SECRET_SCAN_ENABLED=1`
+because content scanning is currently disabled by default for ordinary pushes.
+
 After the GitOps Application is Synced and Healthy, canary a synthetic blocked
 push and a clean push. Then run `rollout.sh --apply` and a final dry run. Review
 every skipped custom hook and compose it with the canonical guard. The audit
