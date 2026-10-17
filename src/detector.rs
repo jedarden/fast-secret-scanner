@@ -571,9 +571,34 @@ const GENERIC_KEYWORDS: &[&[u8]] = &[
     b"_key",
 ];
 
+/// Whether a literal provider prefix at `position` begins a token rather than
+/// continuing a word. `disk-…`, `task-…` and `risk-…` contain `sk-`, and
+/// `keyJson…` contains `eyJ`; a real key follows the start of the line,
+/// whitespace, a quote, `=`, `:`, `-`, `_` or other punctuation. A JSON escape
+/// (`\n`, `\r`, `\t`) or a URL percent-encoding (`%3D`, `%22`) directly before
+/// the key also ends the preceding text, so encoded contexts keep coverage.
+fn starts_token(line: &[u8], position: usize) -> bool {
+    let Some(previous) = position.checked_sub(1).map(|index| line[index]) else {
+        return true;
+    };
+    if !previous.is_ascii_alphanumeric() {
+        return true;
+    }
+    let escaped =
+        position >= 2 && line[position - 2] == b'\\' && matches!(previous, b'n' | b'r' | b't');
+    let percent_encoded = position >= 3
+        && line[position - 3] == b'%'
+        && line[position - 2].is_ascii_hexdigit()
+        && previous.is_ascii_hexdigit();
+    escaped || percent_encoded
+}
+
 fn detect_provider_tokens<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
     for specification in PREFIX_RULES {
         for position in find_all(line, specification.prefix) {
+            if !starts_token(line, position) {
+                continue;
+            }
             let start = position + specification.prefix.len();
             let length = line[start..]
                 .iter()
@@ -597,6 +622,9 @@ fn detect_provider_tokens<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>
     }
 
     for position in find_all(line, b"SG.") {
+        if !starts_token(line, position) {
+            continue;
+        }
         let rest = &line[position + 3..];
         let first = rest.iter().take_while(|byte| is_base64_url(**byte)).count();
         if first >= 16 && rest.get(first) == Some(&b'.') {
@@ -616,7 +644,8 @@ fn detect_provider_tokens<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>
 
     for position in find_all(line, b"sk-") {
         let rest = &line[position + 3..];
-        if rest.starts_with(b"ant-") || rest.starts_with(b"proj-") {
+        if !starts_token(line, position) || rest.starts_with(b"ant-") || rest.starts_with(b"proj-")
+        {
             continue;
         }
         let length = rest.iter().take_while(|byte| is_base64_url(**byte)).count();
@@ -1004,6 +1033,9 @@ fn detect_private_key<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
 
 fn detect_jwt<'a>(line: &'a [u8], detections: &mut Vec<Detection<'a>>) {
     for position in find_all(line, b"eyJ") {
+        if !starts_token(line, position) {
+            continue;
+        }
         let candidate = &line[position..];
         let length = candidate
             .iter()
@@ -1668,5 +1700,118 @@ mod tests {
             ["A7bQ9xL2mN4pR8sT", "3vW6yZ1cD5fG0hJk", "Qw3E"].concat()
         );
         assert!(rules_for(&real).contains("github-token"));
+    }
+
+    /// One runtime-built candidate per literal-prefix rule, with the rule it
+    /// must produce. Bodies are synthetic fragments, never real key material.
+    fn prefix_candidates() -> Vec<(String, &'static str)> {
+        let mut candidates = Vec::new();
+        for specification in PREFIX_RULES {
+            let alphabet = match specification.alphabet {
+                Alphabet::UpperAlphanumeric => "A1B2C3D4E5F6G7H8",
+                Alphabet::Hex => "a1b2c3d4e5f60718",
+                Alphabet::Alphanumeric | Alphabet::Base64Url | Alphabet::Slack => {
+                    "A7bQ9xL2mN4pR8sT"
+                }
+            };
+            let suffix = alphabet
+                .chars()
+                .cycle()
+                .take(specification.minimum)
+                .collect::<String>();
+            let prefix = std::str::from_utf8(specification.prefix).expect("ASCII prefix");
+            candidates.push(([prefix, &suffix].concat(), specification.rule));
+        }
+        let body = synthetic();
+        candidates.push((["s", "k-", &body].concat(), "openai-token"));
+        candidates.push((
+            ["S", "G.", &body[..22], ".", &body, &body].concat(),
+            "sendgrid-api-key",
+        ));
+        candidates.push((
+            [
+                "ey",
+                "JhbGciOiJIUzI1NiJ9.",
+                "eyJzdWIiOiIxMjM0NTY3ODkwIn0.",
+                "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            ]
+            .concat(),
+            "jwt",
+        ));
+        candidates
+    }
+
+    #[test]
+    fn provider_prefixes_match_after_any_token_boundary() {
+        // Start of line, whitespace, quotes, assignment and separator bytes,
+        // a JSON-escaped newline/tab and URL percent-encoding all end the
+        // preceding text. `-` and `_` stay boundaries so a key joined into a
+        // kebab/snake name (and the path redaction that relies on it) is kept.
+        let contexts = [
+            "", " ", "\t", "\"", "'", "`", "=", ":", "(", ",", "/", "-", "_", "text\\n", "text\\t",
+            "q=a%3D", "%22",
+        ];
+        for (candidate, rule) in prefix_candidates() {
+            for context in contexts {
+                let line = format!("{context}{candidate}");
+                assert!(
+                    rules_for(&line).contains(rule),
+                    "expected {rule} after {context:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_prefixes_do_not_match_inside_words() {
+        let sk = ["s", "k-"].concat();
+        // Shapes of the 2026-10-16/17 bead-store false positives: a metrics
+        // artifact filename and a temporary directory whose words end in "sk".
+        let mid_word = [
+            [
+                "artifacts/metrics/di",
+                &sk,
+                "pressure-2026-10-16T21-05-11Z-Rk7Qm2Xa9Lp4.prom",
+            ]
+            .concat(),
+            ["/tmp/bead-ta", &sk, "7c1e-committed-verify.Xq3Lm9Rt2Vb8"].concat(),
+            [
+                "workdir=/home/coding/scratch/ta",
+                &sk,
+                "01J9ZK4M7Q-committed-verify-a8Fk2Lq9",
+            ]
+            .concat(),
+            ["risk-score ri", &sk, "Ab12Cd34Ef56Gh78Ij90Kl"].concat(),
+            ["ta", &sk, "pro", "j-", &synthetic(), &synthetic()].concat(),
+            ["da", &sk, "ant-", &synthetic()].concat(),
+            ["EUR", "ASIA", "PACIFICREGION001"].concat(),
+            [
+                "this.monk",
+                "eyJ",
+                "sonParser.parseDocumentTree.renderOutput()",
+            ]
+            .concat(),
+            [
+                "ERRM",
+                "SG.",
+                "connectionRefusedByPeer.",
+                "retryWithExponentialBackoffAndJitterNow",
+            ]
+            .concat(),
+        ];
+        for line in &mid_word {
+            assert!(rules_for(line).is_empty(), "{line}");
+        }
+        // Every literal-prefix rule is bounded, not only the OpenAI one.
+        for (candidate, rule) in prefix_candidates() {
+            let line = format!("word{candidate}");
+            assert!(!rules_for(&line).contains(rule), "{rule} inside a word");
+        }
+        // The escape and percent-encoding exceptions need their introducer:
+        // a word ending in `n`/`t` or in two hex digits is still a word.
+        for word in ["mention", "format", "dead", "a3d"] {
+            let line = [word, &sk, &synthetic()].concat();
+            assert!(rules_for(&line).is_empty(), "{word}");
+        }
     }
 }

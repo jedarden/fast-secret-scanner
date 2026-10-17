@@ -26,6 +26,8 @@ positive and negative tests and benchmark the staged path.
 
 Provider-prefix matches whose body is a documentation placeholder are not reported: a stopword (`your-`, `example`, …), an identifier-shaped body, or, for mixed-case alphabets only, a body with no digit and a single letter case (`sk-your-openai-api-key-here`, `ghp_` plus one repeated lowercase run). Uppercase-only and hex alphabets keep every match, because their real keys can be single-case and digit-free (fss-eeeb789c).
 
+Every literal prefix (the table above, the legacy `sk-` form, `SG.`, and the JWT `eyJ` header) must begin a token: it is reported only at the start of a line or after a byte that is not an ASCII letter or digit (whitespace, a quote, `=`, `:`, `-`, `_`, other punctuation, or non-ASCII). Before 0.2.9 the prefix could sit inside a word, so `disk-…`/`task-…`/`risk-…` names with 20+ trailing bytes and a hash or `mktemp` segment were reported as `openai-token`, and `keyJson…` or `ERRMSG.` identifiers could read as `jwt` or `sendgrid-api-key`; on 2026-10-16/17 two such filename/temp-directory shapes quarantined two bead-rs stores (fss-820fde6d). A JSON escape (`\n`, `\r`, `\t`) or URL percent-encoding (`%3D`, `%22`) directly before the prefix still counts as a boundary, so escaped and URL-encoded contexts keep their coverage. Known narrowing: a key glued directly to a preceding letter or digit (`abcsk-…`, `"sk-…`) is no longer reported, the same trade-off as the word-boundary (`\b`) anchors on Gitleaks' OpenAI, AWS and JWT rules.
+
 ## Contextual and structural rules
 
 | Rule ID | Detection |

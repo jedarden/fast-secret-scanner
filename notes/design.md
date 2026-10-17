@@ -30,7 +30,9 @@ input was scanned without a finding.
 ## Detector strategy
 
 Provider tokens are recognized by literal prefix, allowed suffix alphabet, and
-length. Generic assignments require a credential-like identifier, a nearby
+length. The prefix must begin a token: the start of the line, a byte that is
+not an ASCII letter or digit, a JSON escape, or a URL percent-encoding, so a
+word such as `disk-…` never reads as an `sk-` key (fss-820fde6d). Generic assignments require a credential-like identifier, a nearby
 assignment operator, a bounded token, letters plus digits, Shannon entropy, and
 placeholder rejection.
 
