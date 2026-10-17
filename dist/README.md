@@ -73,3 +73,14 @@ static target command from commit `dcc1543154d74322cb956aadc9dd370ad9a8c264`. It
 documents in, one span line out each) for bead-rs. Detection is unchanged
 from 0.2.4. Its SHA-256 is `be9768454ebec0c9575e459134bbaf308c8ee6d7057e9d1843d0a6832e43a39f`. Installed as `~/.local/bin/secret-scanner`
 on codinghome; the Forgejo pin is still `0.2.3`.
+
+## 0.2.9 (prefix token boundary, fss-820fde6d)
+
+`secret-scanner-v0.2.9-x86_64-unknown-linux-musl` is built with the same
+static target command from commit `9be14bc6f0d28b177459ee5f49f38713fb85d1d8`. Every literal-prefix rule
+now requires a token boundary, so `disk-…`/`task-…` identifiers no longer
+read as `openai-token` (the false positive that quarantined two bead-rs stores
+on 2026-10-16/17). Its SHA-256 is `c40858d4027b5c8367e771578c9f8a85a7114d5db689cba616d00a662d4799c8`.
+Installed as `~/.local/bin/secret-scanner` on codinghome (0.2.8 backup:
+`secret-scanner.bak-pre-0.2.9-20261017`); 0.2.8 shipped no `dist/` artifact.
+The Forgejo pin is still `0.2.3`.
