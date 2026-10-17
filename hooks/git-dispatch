@@ -22,6 +22,10 @@ if [ "$hook" = pre-commit ]; then
       echo 'secret-scanner: possible secret in staged changes:' >&2
       sed -n '1,20p' "$report" >&2
       echo 'secret-scanner: remove the candidate, rotate it if live, then restage' >&2
+      # Bead checkpoints are content-addressed; a hand edit breaks the store.
+      if grep -q '^\(.*/\)\{0,1\}\.beads/' "$report"; then
+        echo 'secret-scanner: never edit .beads/ by hand; remove bead store findings with `bead doctor --scope secrets` and `bead redact --all-blocking --actor <you> --reason <why>`' >&2
+      fi
       exit 1
       ;;
     3)

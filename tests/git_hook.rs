@@ -62,6 +62,7 @@ mod unix {
         assert!(!blocked.status.success());
         assert!(String::from_utf8_lossy(&blocked.stderr).contains("generic-api-key"));
         assert!(!String::from_utf8_lossy(&blocked.stderr).contains(&candidate));
+        assert!(!String::from_utf8_lossy(&blocked.stderr).contains("bead redact"));
         assert!(!root.join("original-hook-ran").exists());
 
         let mut file = fs::File::create(root.join("fixture.txt")).expect("clean fixture");
@@ -110,6 +111,54 @@ mod unix {
             .expect("binary commit");
         assert!(binary.status.success());
         assert!(String::from_utf8_lossy(&binary.stderr).contains("binary input skipped"));
+        fs::remove_dir_all(&root).expect("remove exact test repository");
+    }
+
+    #[test]
+    fn dispatcher_points_bead_store_findings_to_bead_redact() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "secret-scanner-git-hook-beads-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("hooks")).expect("dispatcher directory");
+        symlink(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("hooks/git-dispatch"),
+            root.join("hooks/pre-commit"),
+        )
+        .expect("link dispatcher");
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "scanner-test"]);
+        git(
+            &root,
+            &["config", "user.email", "scanner-test@example.invalid"],
+        );
+        git(&root, &["config", "core.hooksPath", "hooks"]);
+
+        let candidate = ["A7bQ9xL2", "mN4pR8sT", "3vW6yZ1c", "D5fG0hJk"].concat();
+        fs::create_dir_all(root.join(".beads/checkpoint/objects")).expect("bead checkpoint");
+        fs::write(
+            root.join(".beads/checkpoint/objects/root.jsonl"),
+            format!("{{\"notes\":\"api_key = {candidate}\"}}\n"),
+        )
+        .expect("synthetic candidate in a bead checkpoint");
+        git(&root, &["add", ".beads/checkpoint/objects/root.jsonl"]);
+        let blocked = Command::new("git")
+            .args(["commit", "-q", "-m", "blocked bead checkpoint"])
+            .current_dir(&root)
+            .env("SECRET_SCANNER_BIN", env!("CARGO_BIN_EXE_secret-scanner"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("blocked bead checkpoint commit");
+        assert!(!blocked.status.success());
+        let stderr = String::from_utf8_lossy(&blocked.stderr);
+        assert!(stderr.contains(".beads/checkpoint/objects/root.jsonl:1:"));
+        assert!(stderr.contains("never edit .beads/ by hand"));
+        assert!(stderr.contains("bead redact --all-blocking"));
+        assert!(!stderr.contains(&candidate));
         fs::remove_dir_all(&root).expect("remove exact test repository");
     }
 
