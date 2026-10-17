@@ -15,6 +15,9 @@ COMMIT = re.compile(
 )
 PATCH_PATH = re.compile(r"^\*\*\* (?:Add|Update|Move to) File: (.+)$", re.MULTILINE)
 READ_ONLY_BASH = re.compile(r"^\s*(?:pwd|git\s+status(?:\s+--short)?|git\s+diff(?:\s+--stat)?)\s*$")
+# Bead store records are content-addressed: an in-place edit breaks the
+# checkpoint's root hash and stops the store publishing (utilities, 2026-09-29).
+BEAD_STORE_FINDING = re.compile(r"^(?:.*/)?\.beads/")
 MAX_DIRECT_BYTES = 10_000_000
 
 
@@ -134,11 +137,20 @@ def decision(event: dict) -> dict:
         return block(kind, "secret-scanner returned malformed findings.", event)
     locations = "\n".join(f"  {line}" for line in findings[:20])
     remainder = f"\n  ...and {len(findings) - 20} more" if len(findings) > 20 else ""
+    guidance = (
+        "Remove the candidate from the worktree and index, rotate it if live, "
+        "then scan again."
+    )
+    if any(BEAD_STORE_FINDING.match(line) for line in findings):
+        guidance += (
+            " Never edit files under .beads/ by hand: remove bead store findings "
+            "with `bead doctor --scope secrets` and `bead redact --all-blocking "
+            "--actor <you> --reason <why>` in that repository."
+        )
     message = (
         f"secret-scanner found {len(findings)} possible secret(s):\n"
         f"{locations}{remainder}\n"
-        "Remove the candidate from the worktree and index, rotate it if live, "
-        "then scan again. Matched values are never shown."
+        f"{guidance} Matched values are never shown."
     )
     return block(kind, message, event)
 

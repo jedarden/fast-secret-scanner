@@ -89,6 +89,55 @@ fn agent_hook_handles_findings_clean_errors_non_git_and_stop_loop() {
 }
 
 #[test]
+fn bead_store_findings_point_to_bead_redact_instead_of_hand_edits() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "secret-scanner-agent-hook-beads-{}-{unique}",
+        std::process::id()
+    ));
+    let objects = root.join(".beads/checkpoint/objects");
+    fs::create_dir_all(&objects).expect("temporary bead checkpoint");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .expect("git init")
+            .success()
+    );
+
+    let candidate = ["A7bQ9xL2", "mN4pR8sT", "3vW6yZ1c", "D5fG0hJk"].concat();
+    fs::write(
+        root.join("fixture.txt"),
+        format!("service_api_token = {candidate}\n"),
+    )
+    .expect("synthetic candidate");
+    let stop = event(&root, "Stop", "", false);
+    let output = run_hook(&stop, env!("CARGO_BIN_EXE_secret-scanner"));
+    assert!(output.contains("decision\":\"block"));
+    assert!(output.contains("Remove the candidate from the worktree"));
+    assert!(!output.contains("bead redact"));
+    fs::remove_file(root.join("fixture.txt")).expect("remove fixture");
+
+    fs::write(
+        objects.join("root.jsonl"),
+        format!("{{\"notes\":\"service_api_token = {candidate}\"}}\n"),
+    )
+    .expect("synthetic candidate in a bead checkpoint");
+    let output = run_hook(&stop, env!("CARGO_BIN_EXE_secret-scanner"));
+    assert!(output.contains("decision\":\"block"));
+    assert!(output.contains(".beads/checkpoint/objects/root.jsonl:1:"));
+    assert!(output.contains("Never edit files under .beads/ by hand"));
+    assert!(output.contains("bead redact --all-blocking"));
+    assert!(!output.contains(&candidate));
+
+    fs::remove_dir_all(&root).expect("remove test repository");
+}
+
+#[test]
 fn file_write_events_scan_ignored_files_from_a_repository_subdirectory() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
