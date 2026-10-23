@@ -69,10 +69,27 @@ fn agent_hook_handles_findings_clean_errors_non_git_and_stop_loop() {
     assert_eq!(run_hook(&stop, env!("CARGO_BIN_EXE_secret-scanner")), "{}");
 
     fs::write(root.join("binary.dat"), [0, 1, 2, 3]).expect("write binary fixture");
-    let output = run_hook(&post, env!("CARGO_BIN_EXE_secret-scanner"));
-    assert!(output.contains("skipped binary input"));
-    assert!(!output.contains("decision\":\"block"));
+    assert_eq!(run_hook(&post, env!("CARGO_BIN_EXE_secret-scanner")), "{}");
+    assert_eq!(run_hook(&stop, env!("CARGO_BIN_EXE_secret-scanner")), "{}");
     assert_eq!(run_hook(&pre, env!("CARGO_BIN_EXE_secret-scanner")), "{}");
+    let binary_write = format!(
+        "{{\"cwd\":\"{}\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_input\":{{\"file_path\":\"binary.dat\"}}}}",
+        root.display()
+    );
+    let output = run_hook(&binary_write, env!("CARGO_BIN_EXE_secret-scanner"));
+    assert!(output.contains("binary file written by this tool"));
+    assert!(!output.contains("decision\":\"block"));
+    assert!(!output.contains("binary.dat"));
+    fs::write(
+        root.join("fixture.txt"),
+        format!("service_api_token = {candidate}\n"),
+    )
+    .expect("text finding beside binary");
+    let output = run_hook(&post, env!("CARGO_BIN_EXE_secret-scanner"));
+    assert!(output.contains("fixture.txt:1:generic-api-key"));
+    assert!(output.contains("decision\":\"block"));
+    assert!(!output.contains(&candidate));
+    fs::remove_file(root.join("fixture.txt")).expect("remove text fixture");
     fs::remove_file(root.join("binary.dat")).expect("remove binary fixture");
 
     let outside = std::env::temp_dir().join(format!("secret-scanner-non-git-{unique}"));

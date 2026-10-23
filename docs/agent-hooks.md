@@ -11,6 +11,13 @@ failure is reported as a distinct blocking error. Stop hooks continue the
 agent once; `stop_hook_active` prevents an infinite continuation loop. The Git
 pre-commit and Forgejo pre-receive gates remain commit and push enforcement.
 
+Binary input makes the fast worktree scan exit `3`. The adapter does not block
+or repeatedly notify the agent for a binary elsewhere in the worktree. If the
+current structured tool wrote an identifiable binary file, its `PostToolUse`
+hook sends one notice without naming the file. The Git pre-commit and Forgejo
+gates still run at commit and push. An incomplete scan or execution error
+(exit `2`) remains a blocking hook error.
+
 Install a built Linux binary and merge the user-level hooks:
 
 ```bash

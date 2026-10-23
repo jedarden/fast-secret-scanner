@@ -96,7 +96,7 @@ def decision(event: dict) -> dict:
         return block(kind, "secret-scanner could not execute or timed out.", event)
 
     if result.returncode in (0, 3) and kind == "PostToolUse":
-        skipped_binary = result.returncode == 3
+        written_binary = False
         for path in written_paths(event, Path(cwd), root_path):
             try:
                 if path.stat().st_size > MAX_DIRECT_BYTES:
@@ -115,21 +115,17 @@ def decision(event: dict) -> dict:
                 result = direct
                 break
             if direct.returncode == 3:
-                skipped_binary = True
+                written_binary = True
             elif direct.returncode != 0:
                 return block(kind, "secret-scanner failed on a written file.", event)
         else:
-            if skipped_binary:
-                return {"systemMessage": "secret-scanner skipped binary input; the comprehensive Git and Forgejo secret gates remain required."}
+            if written_binary:
+                return {"systemMessage": "secret-scanner could not inspect a binary file written by this tool; review it before committing. The Git and Forgejo secret gates still run."}
             return {}
     if result.returncode == 0:
         return {}
     if result.returncode == 3:
-        if kind == "PreToolUse":
-            return {}  # The Git pre-commit and Forgejo Gitleaks gates still run.
-        return {
-            "systemMessage": "secret-scanner skipped binary input; the comprehensive Git and Forgejo secret gates remain required."
-        }
+        return {}  # The Git pre-commit and Forgejo Gitleaks gates still run.
     if result.returncode != 1:
         return block(kind, "secret-scanner failed; inspect the installed binary.", event)
     findings = result.stdout.decode("utf-8", errors="replace").splitlines()
