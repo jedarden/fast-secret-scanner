@@ -105,6 +105,67 @@ fn agent_hook_handles_findings_clean_errors_non_git_and_stop_loop() {
     fs::remove_dir_all(&root).expect("remove test repository");
 }
 
+// fss-00d6f6f9: a Bash PostToolUse event in a repository holding an oversized
+// binary download produces no block, while an oversized text file produces a
+// block that names the cause and the remedy without any path.
+#[test]
+fn oversized_binary_input_does_not_block_but_oversized_text_names_the_cause() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+
+    let binary_repo = std::env::temp_dir().join(format!(
+        "secret-scanner-hook-oversized-binary-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&binary_repo).expect("temporary binary repository");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&binary_repo)
+            .status()
+            .expect("git init")
+            .success()
+    );
+    fs::write(binary_repo.join("download.bin"), vec![0_u8; 10_500_000])
+        .expect("write oversized binary fixture");
+    let post = event(&binary_repo, "PostToolUse", "", false);
+    assert_eq!(
+        run_hook(&post, env!("CARGO_BIN_EXE_secret-scanner")),
+        "{}",
+        "an oversized binary input is binary, not an incomplete scan"
+    );
+    fs::remove_dir_all(&binary_repo).expect("remove binary repository");
+
+    let text_repo = std::env::temp_dir().join(format!(
+        "secret-scanner-hook-oversized-text-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&text_repo).expect("temporary text repository");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&text_repo)
+            .status()
+            .expect("git init")
+            .success()
+    );
+    fs::write(text_repo.join("download.txt"), vec![b'a'; 10_500_000])
+        .expect("write oversized text fixture");
+    let output = run_hook(
+        &event(&text_repo, "PostToolUse", "", false),
+        env!("CARGO_BIN_EXE_secret-scanner"),
+    );
+    assert!(output.contains("decision\":\"block"), "{output}");
+    assert!(output.contains("oversized"), "{output}");
+    assert!(output.contains("move large untracked files"), "{output}");
+    let repo_name = text_repo.to_str().expect("UTF-8 repository path");
+    assert!(!output.contains(repo_name), "{output}");
+    assert!(!output.contains("download.txt"), "{output}");
+    fs::remove_dir_all(&text_repo).expect("remove text repository");
+}
+
 #[test]
 fn bead_store_findings_point_to_bead_redact_instead_of_hand_edits() {
     let unique = SystemTime::now()

@@ -95,13 +95,15 @@ It does **not** scan Git history, unpack archives, recursively decode content,
 validate credentials with providers, or reproduce Gitleaks' complete rule and
 allowlist system. See [exact rule coverage and gaps](research/rule-coverage.md).
 
-Oversized files and patches above 512 MiB produce exit `2`. Binary input
-without another finding produces exit `3` and proceeds to the pinned Gitleaks
-gate in fleet hooks. `--summary` reports oversized and binary skip counts
-without printing file contents or unsafe paths. The `--max-bytes` option
-applies to explicit, tracked, untracked, and standard-input file scans; staged
-and worktree patches use a separate 512 MiB cap. File limits cannot exceed
-512 MiB.
+A file above the scan limit produces exit `2`, an incomplete scan — unless a
+NUL byte sits in the file's first 8,192 bytes, which marks the whole file
+binary instead; binary input is never content-scanned at any size. Binary
+input without another finding produces exit `3` and proceeds to the pinned
+Gitleaks gate in fleet hooks. The default scan limit is 10,000,000 bytes per
+file; `--max-bytes` changes it, up to a 512 MiB hard cap, and applies to
+explicit, tracked, untracked, and standard-input file scans. Staged and
+worktree patches use a separate 512 MiB cap. `--summary` reports oversized
+and binary skip counts without printing file contents or unsafe paths.
 
 ## Measured performance
 

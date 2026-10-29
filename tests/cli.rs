@@ -543,6 +543,52 @@ fn skipped_and_oversized_input_is_not_reported_clean() {
     fs::remove_dir_all(&repository).expect("remove test repository");
 }
 
+// fss-00d6f6f9: an oversized untracked file with a NUL in its first 8 KiB is
+// binary (exit 3, the Gitleaks gate), not an incomplete scan (exit 2), so a
+// large download left in a repository does not block every agent command.
+#[test]
+fn oversized_binary_input_is_binary_while_oversized_text_stays_incomplete() {
+    let repository = temporary_repository("oversized-binary");
+    git(&repository, &["init", "-q"]);
+    fs::write(repository.join("download.bin"), vec![0_u8; 10_500_000])
+        .expect("write oversized binary fixture");
+    let scanned = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--worktree", "--summary"])
+        .current_dir(&repository)
+        .output()
+        .expect("scan oversized binary input");
+    assert_eq!(scanned.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&scanned.stderr);
+    assert!(stderr.contains("skipped_binary=1"), "{stderr}");
+    assert!(stderr.contains("skipped_oversized=0"), "{stderr}");
+    assert!(!stderr.contains("incomplete scan"), "{stderr}");
+    fs::remove_dir_all(&repository).expect("remove test repository");
+
+    let repository = temporary_repository("oversized-text");
+    git(&repository, &["init", "-q"]);
+    fs::write(repository.join("download.txt"), vec![b'a'; 10_500_000])
+        .expect("write oversized text fixture");
+    let scanned = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .args(["--worktree", "--summary"])
+        .current_dir(&repository)
+        .output()
+        .expect("scan oversized text input");
+    assert_eq!(scanned.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&scanned.stderr);
+    assert!(stderr.contains("skipped_oversized=1"), "{stderr}");
+    assert!(
+        stderr.contains("incomplete scan: 1 oversized input(s)"),
+        "{stderr}"
+    );
+    assert!(
+        !scanned
+            .stderr
+            .windows(candidate().len())
+            .any(|part| part == candidate().as_bytes())
+    );
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
 fn temporary_repository(label: &str) -> std::path::PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

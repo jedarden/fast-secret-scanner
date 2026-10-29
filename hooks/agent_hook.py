@@ -19,6 +19,10 @@ READ_ONLY_BASH = re.compile(r"^\s*(?:pwd|git\s+status(?:\s+--short)?|git\s+diff(
 # checkpoint's root hash and stops the store publishing (utilities, 2026-09-29).
 BEAD_STORE_FINDING = re.compile(r"^(?:.*/)?\.beads/")
 MAX_DIRECT_BYTES = 10_000_000
+# Scanner exit 2 with this stderr line is an incomplete scan caused by
+# oversized inputs; the counts are the only variable content, so naming them
+# back to the agent never discloses a path or scanned bytes.
+INCOMPLETE_SCAN = re.compile(r"incomplete scan: ([0-9]+) oversized input")
 
 
 def written_paths(event: dict, cwd: Path, root: Path) -> list[Path]:
@@ -127,6 +131,18 @@ def decision(event: dict) -> dict:
     if result.returncode == 3:
         return {}  # The Git pre-commit and Forgejo Gitleaks gates still run.
     if result.returncode != 1:
+        if result.returncode == 2:
+            incomplete = INCOMPLETE_SCAN.search(
+                result.stderr.decode("utf-8", errors="replace")
+            )
+            if incomplete:
+                return block(
+                    kind,
+                    "secret-scanner: incomplete scan, "
+                    f"{incomplete.group(1)} oversized file(s) in the worktree; "
+                    "move large untracked files outside the repository.",
+                    event,
+                )
         return block(kind, "secret-scanner failed; inspect the installed binary.", event)
     findings = result.stdout.decode("utf-8", errors="replace").splitlines()
     if not findings or any(not FINDING.fullmatch(line) for line in findings):

@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_MAX_BYTES: u64 = 10_000_000;
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+/// Prefix checked for a NUL when input already exceeds `max_bytes`.
+const OVERSIZED_SNIFF_BYTES: usize = 8_192;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ScanSkips {
@@ -85,7 +87,7 @@ impl Scanner {
 
     pub fn scan_bytes(&mut self, path: &str, content: &[u8]) {
         if content.len() as u64 > self.max_bytes {
-            self.mark_oversized();
+            self.mark_oversized_input(&content[..content.len().min(OVERSIZED_SNIFF_BYTES)]);
             return;
         }
         if content.contains(&0) {
@@ -191,6 +193,19 @@ impl Scanner {
         self.skips.oversized = self.skips.oversized.saturating_add(1);
     }
 
+    /// Record an input that exceeds `max_bytes`. One NUL in its checked
+    /// prefix already makes the whole input binary under the full-content
+    /// rule, so it is recorded as binary instead: binary input is never
+    /// content-scanned at any size, and exit 3 routes it to the pinned
+    /// Gitleaks gate instead of blocking agents with an incomplete scan.
+    fn mark_oversized_input(&mut self, prefix: &[u8]) {
+        if prefix.contains(&0) {
+            self.mark_binary();
+        } else {
+            self.mark_oversized();
+        }
+    }
+
     fn scan_directory(&mut self, root: &Path) -> io::Result<()> {
         let mut pending = vec![root.to_path_buf()];
         while let Some(directory) = pending.pop() {
@@ -213,7 +228,7 @@ impl Scanner {
     fn scan_regular_file(&mut self, path: &Path) -> io::Result<()> {
         let metadata = fs::metadata(path)?;
         if metadata.len() > self.max_bytes {
-            self.mark_oversized();
+            self.mark_oversized_input(&read_prefix(path, OVERSIZED_SNIFF_BYTES));
             return Ok(());
         }
         let content = fs::read(path)?;
@@ -333,6 +348,19 @@ fn path_has_secret_shape(path: &str) -> bool {
     detect_generic_assignment(path.as_bytes(), &mut detections);
     detect_jwt(path.as_bytes(), &mut detections);
     !detections.is_empty()
+}
+
+/// Best-effort read of at most `limit` leading bytes. An empty prefix (a
+/// file that cannot be opened or read) keeps the input classified oversized,
+/// as before the sniff existed.
+fn read_prefix(path: &Path, limit: usize) -> Vec<u8> {
+    fs::File::open(path)
+        .and_then(|file| {
+            let mut prefix = Vec::new();
+            file.take(limit as u64).read_to_end(&mut prefix)?;
+            Ok(prefix)
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -1553,6 +1581,32 @@ mod tests {
         let encoded = ["QWJjZGVm", "R2hpSmtM", "bW5PcFFy", "U3RVVldY", "WVo="].concat();
         let content = format!("kind: Secret\ndata:\n  password: {encoded}\n");
         assert!(rules_for(&content).contains("kubernetes-secret-yaml"));
+    }
+
+    // fss-00d6f6f9: an input above `max_bytes` with a NUL in its sniffed
+    // prefix is binary, not an incomplete scan, so a large download left in a
+    // repository does not block every agent command.
+    #[test]
+    fn oversized_input_with_a_nul_prefix_is_binary_not_oversized() {
+        let mut scanner = Scanner::with_max_bytes(10);
+        scanner.scan_bytes("download.bin", &[0_u8; 11]);
+        assert_eq!(scanner.skips().binary, 1);
+        assert_eq!(scanner.skips().oversized, 0);
+
+        let mut scanner = Scanner::with_max_bytes(10);
+        scanner.scan_bytes("download.txt", &[b'a'; 11]);
+        assert_eq!(scanner.skips().oversized, 1);
+        assert_eq!(scanner.skips().binary, 0);
+
+        // The sniff window is bounded: a NUL beyond the checked prefix keeps
+        // the input classified oversized.
+        let mut scanner = Scanner::with_max_bytes(10);
+        let mut late_nul = vec![b'a'; OVERSIZED_SNIFF_BYTES + 8];
+        let last = late_nul.len() - 1;
+        late_nul[last] = 0;
+        scanner.scan_bytes("late-nul.bin", &late_nul);
+        assert_eq!(scanner.skips().oversized, 1);
+        assert_eq!(scanner.skips().binary, 0);
     }
 
     #[test]
