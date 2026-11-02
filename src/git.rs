@@ -14,7 +14,24 @@ pub const MAX_PATCH_BYTES: u64 = 512 * 1024 * 1024;
 ///
 /// Returns an I/O error when Git cannot be executed or the staged diff fails.
 pub fn scan_staged(scanner: &mut Scanner) -> io::Result<()> {
-    scan_diff(scanner, &["--cached"])
+    scan_diff(scanner, &["--cached"], &[])
+}
+
+/// Paths with unresolved merge stages, each reported once. Empty unless a
+/// merge is in progress; an unborn index reports none.
+fn unmerged_paths() -> io::Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=U", "-z"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("git diff --diff-filter=U failed"));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|raw_path| !raw_path.is_empty())
+        .map(|raw_path| String::from_utf8_lossy(raw_path).into_owned())
+        .collect())
 }
 
 /// Scan staged and unstaged additions, plus complete untracked regular files.
@@ -25,7 +42,31 @@ pub fn scan_staged(scanner: &mut Scanner) -> io::Result<()> {
 /// Returns an I/O error when Git or a selected untracked file cannot be read.
 pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
     scan_staged(scanner)?;
-    scan_diff(scanner, &[])?;
+    // Unresolved conflicts make Git emit a combined (`diff --cc`) patch for
+    // each unmerged path, which the two-way hunk parser rejects. Instead of
+    // parsing it, scan the worktree file whole: that is the content a
+    // resolution would keep, and conflict markers can hide a secret from
+    // either side. The paths are then excluded from the two-way diff below.
+    let unmerged = unmerged_paths()?;
+    for path in &unmerged {
+        let path = PathBuf::from(path);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            // A conflicted path can already be gone from the worktree; it
+            // then contributes nothing a resolution could commit.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if metadata.file_type().is_file() {
+            scanner.scan_path(&path)?;
+        }
+    }
+    let excludes: Vec<String> = unmerged
+        .iter()
+        .map(|path| format!(":(exclude,literal){path}"))
+        .collect();
+    let excludes = excludes.iter().map(String::as_str).collect::<Vec<_>>();
+    scan_diff(scanner, &[], &excludes)?;
     let output = Command::new("git")
         .args(["ls-files", "--others", "--exclude-standard", "-z"])
         .output()?;
@@ -45,7 +86,7 @@ pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
     Ok(())
 }
 
-fn scan_diff(scanner: &mut Scanner, extra: &[&str]) -> io::Result<()> {
+fn scan_diff(scanner: &mut Scanner, extra: &[&str], pathspecs: &[&str]) -> io::Result<()> {
     let mut command = Command::new("git");
     command
         .args(["-c", "core.quotePath=false", "diff"])
@@ -58,6 +99,7 @@ fn scan_diff(scanner: &mut Scanner, extra: &[&str]) -> io::Result<()> {
             "--diff-filter=ACMR",
             "--",
         ])
+        .args(pathspecs)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut child = command.spawn()?;

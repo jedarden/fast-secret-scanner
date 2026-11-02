@@ -20,6 +20,16 @@ Patch parsing tracks file headers and hunk line counts. A `+++ ` byte sequence
 inside an added line remains file content, so it cannot change the active path
 or hide following additions. Inconsistent or truncated patch input returns an
 execution error instead of a clean result.
+The worktree scan never parses a combined patch. While a merge has unresolved
+paths, Git emits `diff --cc` output with two-column line prefixes for them, and
+the two-way hunk parser rejects that shape. The scan enumerates unmerged paths
+(`git diff --name-only --diff-filter=U`), scans each worktree file whole — that
+is the content a resolution would keep, and conflict markers can hide a secret
+from either side — and excludes those paths from the two-way unstaged diff with
+`:(exclude,literal)` pathspecs. A conflicted path already gone from the
+worktree, or not a regular file, contributes nothing and is skipped. The staged
+scan is unchanged: `git diff --cached` emits no patch content for unmerged
+paths (fss-b2b4e7b3).
 Git diff output and patch standard input are capped at 512 MiB before parsing.
 Oversized or binary file scans and Git binary patch markers increment skip
 counts. Oversized input exits `2`; binary input without a text finding exits

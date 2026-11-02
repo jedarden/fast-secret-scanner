@@ -362,6 +362,93 @@ fn worktree_covers_unborn_repo_and_patch_stdin_covers_commit_patch() {
     fs::remove_dir_all(&repository).expect("remove test repository");
 }
 
+// fss-b2b4e7b3: an unresolved merge conflict makes Git emit combined
+// (`diff --cc`) patches, which the two-way hunk parser rejects. Conflicted
+// paths are scanned whole instead and kept out of the two-way diff.
+fn conflicted_repository(label: &str, incoming_line: &str) -> std::path::PathBuf {
+    let repository = temporary_repository(label);
+    git(&repository, &["init", "-q", "-b", "main"]);
+    // The fleet's global pre-commit hook would veto the synthetic commits.
+    git(&repository, &["config", "core.hooksPath", "/dev/null"]);
+    git(&repository, &["config", "user.name", "scanner-test"]);
+    git(
+        &repository,
+        &["config", "user.email", "scanner-test@example.invalid"],
+    );
+    fs::write(repository.join("conflict.txt"), "base\n").expect("baseline conflict file");
+    fs::write(repository.join("clean.txt"), "clean\n").expect("clean file");
+    git(&repository, &["add", "conflict.txt", "clean.txt"]);
+    git(&repository, &["commit", "-q", "-m", "base"]);
+    git(&repository, &["checkout", "-q", "-b", "other"]);
+    fs::write(
+        repository.join("conflict.txt"),
+        format!("{incoming_line}\n"),
+    )
+    .expect("incoming side");
+    git(&repository, &["commit", "-q", "-am", "incoming"]);
+    git(&repository, &["checkout", "-q", "main"]);
+    fs::write(repository.join("conflict.txt"), "ours\n").expect("our side");
+    git(&repository, &["commit", "-q", "-am", "ours"]);
+    let merge = Command::new("git")
+        .args(["merge", "-q", "other"])
+        .current_dir(&repository)
+        .status()
+        .expect("start merge");
+    assert!(!merge.success(), "merge must stop on the conflict");
+    repository
+}
+
+#[test]
+fn worktree_scan_survives_an_unresolved_merge_conflict() {
+    let repository = conflicted_repository("conflict-clean", "theirs");
+    // A normal unstaged change elsewhere must still be scanned while the
+    // exclude pathspecs are active.
+    fs::write(repository.join("clean.txt"), "clean\nedited\n").expect("unstaged edit");
+    let output = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--worktree")
+        .current_dir(&repository)
+        .output()
+        .expect("scan conflicted worktree");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let staged = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--staged")
+        .current_dir(&repository)
+        .output()
+        .expect("scan conflicted index");
+    assert_eq!(staged.status.code(), Some(0));
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
+#[test]
+fn worktree_scan_reports_a_candidate_on_the_incoming_conflict_side() {
+    let candidate = candidate();
+    let repository = conflicted_repository("conflict-candidate", &format!("api_key = {candidate}"));
+    let output = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+        .arg("--worktree")
+        .current_dir(&repository)
+        .output()
+        .expect("scan conflicted worktree");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    // The incoming side is worktree line 4, below the three conflict markers.
+    assert!(
+        stdout.contains("conflict.txt:4:generic-api-key"),
+        "{stdout}"
+    );
+    assert!(
+        !output
+            .stdout
+            .windows(candidate.len())
+            .any(|part| part == candidate.as_bytes())
+    );
+    fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
 #[test]
 fn git_generated_header_like_added_line_cannot_hide_a_candidate() {
     let repository = temporary_repository("header-like-added-line");
