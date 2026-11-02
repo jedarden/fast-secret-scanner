@@ -26,7 +26,9 @@ the two-way hunk parser rejects that shape. The scan enumerates unmerged paths
 (`git diff --name-only --diff-filter=U`), scans each worktree file whole — that
 is the content a resolution would keep, and conflict markers can hide a secret
 from either side — and excludes those paths from the two-way unstaged diff with
-`:(exclude,literal)` pathspecs. A conflicted path already gone from the
+repo-root-relative `:(exclude,top,literal)` pathspecs. Unmerged files are
+resolved against the repository root so scans from a subdirectory read the
+correct worktree files. A conflicted path already gone from the
 worktree, or not a regular file, contributes nothing and is skipped. The staged
 scan is unchanged: `git diff --cached` emits no patch content for unmerged
 paths (fss-b2b4e7b3).

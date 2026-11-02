@@ -365,7 +365,11 @@ fn worktree_covers_unborn_repo_and_patch_stdin_covers_commit_patch() {
 // fss-b2b4e7b3: an unresolved merge conflict makes Git emit combined
 // (`diff --cc`) patches, which the two-way hunk parser rejects. Conflicted
 // paths are scanned whole instead and kept out of the two-way diff.
-fn conflicted_repository(label: &str, incoming_line: &str) -> std::path::PathBuf {
+fn conflicted_repository(
+    label: &str,
+    conflict_path: &str,
+    incoming_line: &str,
+) -> std::path::PathBuf {
     let repository = temporary_repository(label);
     git(&repository, &["init", "-q", "-b", "main"]);
     // The fleet's global pre-commit hook would veto the synthetic commits.
@@ -375,19 +379,16 @@ fn conflicted_repository(label: &str, incoming_line: &str) -> std::path::PathBuf
         &repository,
         &["config", "user.email", "scanner-test@example.invalid"],
     );
-    fs::write(repository.join("conflict.txt"), "base\n").expect("baseline conflict file");
+    fs::create_dir_all(repository.join("sub")).expect("nested directory");
+    fs::write(repository.join(conflict_path), "base\n").expect("baseline conflict file");
     fs::write(repository.join("clean.txt"), "clean\n").expect("clean file");
-    git(&repository, &["add", "conflict.txt", "clean.txt"]);
+    git(&repository, &["add", conflict_path, "clean.txt"]);
     git(&repository, &["commit", "-q", "-m", "base"]);
     git(&repository, &["checkout", "-q", "-b", "other"]);
-    fs::write(
-        repository.join("conflict.txt"),
-        format!("{incoming_line}\n"),
-    )
-    .expect("incoming side");
+    fs::write(repository.join(conflict_path), format!("{incoming_line}\n")).expect("incoming side");
     git(&repository, &["commit", "-q", "-am", "incoming"]);
     git(&repository, &["checkout", "-q", "main"]);
-    fs::write(repository.join("conflict.txt"), "ours\n").expect("our side");
+    fs::write(repository.join(conflict_path), "ours\n").expect("our side");
     git(&repository, &["commit", "-q", "-am", "ours"]);
     let merge = Command::new("git")
         .args(["merge", "-q", "other"])
@@ -400,7 +401,7 @@ fn conflicted_repository(label: &str, incoming_line: &str) -> std::path::PathBuf
 
 #[test]
 fn worktree_scan_survives_an_unresolved_merge_conflict() {
-    let repository = conflicted_repository("conflict-clean", "theirs");
+    let repository = conflicted_repository("conflict-clean", "conflict.txt", "theirs");
     // A normal unstaged change elsewhere must still be scanned while the
     // exclude pathspecs are active.
     fs::write(repository.join("clean.txt"), "clean\nedited\n").expect("unstaged edit");
@@ -427,7 +428,11 @@ fn worktree_scan_survives_an_unresolved_merge_conflict() {
 #[test]
 fn worktree_scan_reports_a_candidate_on_the_incoming_conflict_side() {
     let candidate = candidate();
-    let repository = conflicted_repository("conflict-candidate", &format!("api_key = {candidate}"));
+    let repository = conflicted_repository(
+        "conflict-candidate",
+        "conflict.txt",
+        &format!("api_key = {candidate}"),
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
         .arg("--worktree")
         .current_dir(&repository)
@@ -447,6 +452,55 @@ fn worktree_scan_reports_a_candidate_on_the_incoming_conflict_side() {
             .any(|part| part == candidate.as_bytes())
     );
     fs::remove_dir_all(&repository).expect("remove test repository");
+}
+
+#[test]
+fn worktree_scan_survives_nested_conflict_from_subdirectory() {
+    for (label, path) in [
+        ("nested-conflict-clean", "sub/conflict.txt"),
+        ("root-conflict-clean", "conflict.txt"),
+    ] {
+        let repository = conflicted_repository(label, path, "theirs");
+        let output = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+            .arg("--worktree")
+            .current_dir(repository.join("sub"))
+            .output()
+            .expect("scan conflicted worktree from subdirectory");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(&repository).expect("remove test repository");
+    }
+}
+
+#[test]
+fn worktree_scan_reports_nested_conflict_candidate_from_subdirectory() {
+    let candidate = candidate();
+    for (label, path) in [
+        ("nested-conflict-candidate", "sub/conflict.txt"),
+        ("root-conflict-candidate", "conflict.txt"),
+    ] {
+        let repository = conflicted_repository(label, path, &format!("api_key = {candidate}"));
+        let output = Command::new(env!("CARGO_BIN_EXE_secret-scanner"))
+            .arg("--worktree")
+            .current_dir(repository.join("sub"))
+            .output()
+            .expect("scan conflicted worktree from subdirectory");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(&format!("{path}:4:generic-api-key")));
+        assert!(!stdout.contains(&candidate));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(&candidate));
+        fs::remove_dir_all(&repository).expect("remove test repository");
+    }
 }
 
 #[test]

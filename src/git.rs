@@ -19,9 +19,10 @@ pub fn scan_staged(scanner: &mut Scanner) -> io::Result<()> {
 
 /// Paths with unresolved merge stages, each reported once. Empty unless a
 /// merge is in progress; an unborn index reports none.
-fn unmerged_paths() -> io::Result<Vec<String>> {
+fn unmerged_paths(root: &std::path::Path) -> io::Result<Vec<String>> {
     let output = Command::new("git")
         .args(["diff", "--name-only", "--diff-filter=U", "-z"])
+        .current_dir(root)
         .output()?;
     if !output.status.success() {
         return Err(io::Error::other("git diff --diff-filter=U failed"));
@@ -47,9 +48,17 @@ pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
     // parsing it, scan the worktree file whole: that is the content a
     // resolution would keep, and conflict markers can hide a secret from
     // either side. The paths are then excluded from the two-way diff below.
-    let unmerged = unmerged_paths()?;
+    let root = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !root.status.success() {
+        return Err(io::Error::other("git rev-parse --show-toplevel failed"));
+    }
+    let root = String::from_utf8_lossy(&root.stdout);
+    let root = PathBuf::from(root.strip_suffix('\n').unwrap_or(&root));
+    let unmerged = unmerged_paths(&root)?;
     for path in &unmerged {
-        let path = PathBuf::from(path);
+        let path = root.join(path);
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             // A conflicted path can already be gone from the worktree; it
@@ -63,7 +72,7 @@ pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
     }
     let excludes: Vec<String> = unmerged
         .iter()
-        .map(|path| format!(":(exclude,literal){path}"))
+        .map(|path| format!(":(exclude,top,literal){path}"))
         .collect();
     let excludes = excludes.iter().map(String::as_str).collect::<Vec<_>>();
     scan_diff(scanner, &[], &excludes)?;
