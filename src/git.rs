@@ -58,8 +58,8 @@ pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
     let root = PathBuf::from(root.strip_suffix('\n').unwrap_or(&root));
     let unmerged = unmerged_paths(&root)?;
     for path in &unmerged {
-        let path = root.join(path);
-        let metadata = match fs::symlink_metadata(&path) {
+        let file_path = root.join(path);
+        let metadata = match fs::symlink_metadata(&file_path) {
             Ok(metadata) => metadata,
             // A conflicted path can already be gone from the worktree; it
             // then contributes nothing a resolution could commit.
@@ -67,7 +67,9 @@ pub fn scan_worktree(scanner: &mut Scanner) -> io::Result<()> {
             Err(error) => return Err(error),
         };
         if metadata.file_type().is_file() {
-            scanner.scan_path(&path)?;
+            // Findings stay relative to the repository root, like every other
+            // worktree surface, regardless of the directory the scan ran in.
+            scanner.scan_labeled_file(&file_path, path)?;
         }
     }
     let excludes: Vec<String> = unmerged

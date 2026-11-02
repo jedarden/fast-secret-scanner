@@ -28,7 +28,9 @@ is the content a resolution would keep, and conflict markers can hide a secret
 from either side — and excludes those paths from the two-way unstaged diff with
 repo-root-relative `:(exclude,top,literal)` pathspecs. Unmerged files are
 resolved against the repository root so scans from a subdirectory read the
-correct worktree files. A conflicted path already gone from the
+correct worktree files, and their findings stay relative to that root
+(`sub/f.txt:4:rule`), matching the path style of the diff-based and untracked
+surfaces. A conflicted path already gone from the
 worktree, or not a regular file, contributes nothing and is skipped. The staged
 scan is unchanged: `git diff --cached` emits no patch content for unmerged
 paths (fss-b2b4e7b3).

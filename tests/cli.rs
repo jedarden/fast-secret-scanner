@@ -440,9 +440,12 @@ fn worktree_scan_reports_a_candidate_on_the_incoming_conflict_side() {
         .expect("scan conflicted worktree");
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    // The incoming side is worktree line 4, below the three conflict markers.
+    // The incoming side is worktree line 4, below the three conflict markers,
+    // reported relative to the repository root.
     assert!(
-        stdout.contains("conflict.txt:4:generic-api-key"),
+        stdout
+            .lines()
+            .any(|line| line == "conflict.txt:4:generic-api-key"),
         "{stdout}"
     );
     assert!(
@@ -496,7 +499,11 @@ fn worktree_scan_reports_nested_conflict_candidate_from_subdirectory() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains(&format!("{path}:4:generic-api-key")));
+        // The finding path stays relative to the repository root even though
+        // the scan ran from sub/ and read the file through an absolute path.
+        let finding = format!("{path}:4:generic-api-key");
+        assert!(stdout.lines().any(|line| line == finding), "{stdout}");
+        assert!(!stdout.contains(&repository.display().to_string()));
         assert!(!stdout.contains(&candidate));
         assert!(!String::from_utf8_lossy(&output.stderr).contains(&candidate));
         fs::remove_dir_all(&repository).expect("remove test repository");

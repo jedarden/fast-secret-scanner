@@ -226,13 +226,24 @@ impl Scanner {
     }
 
     fn scan_regular_file(&mut self, path: &Path) -> io::Result<()> {
+        self.scan_labeled_file(path, &path.to_string_lossy())
+    }
+
+    /// Scan one file, reporting findings under `label` instead of the file's
+    /// own path. Callers that read a file outside the current directory use
+    /// this to keep finding paths relative to their own root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the file cannot be read.
+    pub fn scan_labeled_file(&mut self, path: &Path, label: &str) -> io::Result<()> {
         let metadata = fs::metadata(path)?;
         if metadata.len() > self.max_bytes {
             self.mark_oversized_input(&read_prefix(path, OVERSIZED_SNIFF_BYTES));
             return Ok(());
         }
         let content = fs::read(path)?;
-        self.scan_bytes(&path.to_string_lossy(), &content);
+        self.scan_bytes(label, &content);
         Ok(())
     }
 
