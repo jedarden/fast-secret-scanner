@@ -19,10 +19,64 @@ READ_ONLY_BASH = re.compile(r"^\s*(?:pwd|git\s+status(?:\s+--short)?|git\s+diff(
 # checkpoint's root hash and stops the store publishing (utilities, 2026-09-29).
 BEAD_STORE_FINDING = re.compile(r"^(?:.*/)?\.beads/")
 MAX_DIRECT_BYTES = 10_000_000
+SCANNER_TIMEOUT_SECONDS = 20
+UNTRACKED_COUNT_TIMEOUT_SECONDS = 5
 # Scanner exit 2 with this stderr line is an incomplete scan caused by
 # oversized inputs; the counts are the only variable content, so naming them
 # back to the agent never discloses a path or scanned bytes.
 INCOMPLETE_SCAN = re.compile(r"incomplete scan: ([0-9]+) oversized input")
+KNOWN_SCANNER_FAILURES = {
+    "Git patch exceeds scan byte limit": (
+        "secret-scanner: Git patch exceeds scan byte limit; inspect "
+        "staged-then-deleted entries with `git status`, then unstage them "
+        "before retrying."
+    ),
+}
+
+
+def untracked_file_count(root: Path) -> int | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fsdecode(root), "ls-files", "--others",
+             "--exclude-standard", "-z"],
+            capture_output=True,
+            check=False,
+            timeout=UNTRACKED_COUNT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.count(b"\0")
+
+
+def timeout_message(root: Path, scope: str) -> str:
+    count = untracked_file_count(root)
+    if count is None:
+        untracked = "the untracked-file count was unavailable"
+    else:
+        untracked = f"{count} untracked file(s)"
+    return (
+        "secret-scanner timed out at its 20 s limit (20 seconds) while scanning "
+        f"{scope}; {untracked}. Inspect large untracked directories and move "
+        "them outside the repository before retrying."
+    )
+
+
+def scanner_failure_message(result) -> str:
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    if result.returncode == 2:
+        incomplete = INCOMPLETE_SCAN.search(stderr)
+        if incomplete:
+            return (
+                "secret-scanner: incomplete scan, "
+                f"{incomplete.group(1)} oversized file(s) in the worktree; "
+                "move large untracked files outside the repository."
+            )
+        for marker, message in KNOWN_SCANNER_FAILURES.items():
+            if marker in stderr:
+                return message
+    return "secret-scanner failed; inspect the installed binary."
 
 
 def written_paths(event: dict, cwd: Path, root: Path) -> list[Path]:
@@ -94,10 +148,12 @@ def decision(event: dict) -> dict:
             cwd=root_path,
             capture_output=True,
             check=False,
-            timeout=20,
+            timeout=SCANNER_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return block(kind, "secret-scanner could not execute or timed out.", event)
+    except subprocess.TimeoutExpired:
+        return block(kind, timeout_message(root_path, "the worktree"), event)
+    except OSError:
+        return block(kind, "secret-scanner could not execute the installed scanner binary.", event)
 
     if result.returncode in (0, 3) and kind == "PostToolUse":
         written_binary = False
@@ -111,10 +167,12 @@ def decision(event: dict) -> dict:
                     input=content,
                     capture_output=True,
                     check=False,
-                    timeout=20,
+                    timeout=SCANNER_TIMEOUT_SECONDS,
                 )
-            except (OSError, subprocess.TimeoutExpired):
-                return block(kind, "secret-scanner could not scan a written file.", event)
+            except subprocess.TimeoutExpired:
+                return block(kind, timeout_message(root_path, "the written file"), event)
+            except OSError:
+                return block(kind, "secret-scanner could not execute the written-file scan.", event)
             if direct.returncode == 1:
                 result = direct
                 break
@@ -131,19 +189,7 @@ def decision(event: dict) -> dict:
     if result.returncode == 3:
         return {}  # The Git pre-commit and Forgejo Gitleaks gates still run.
     if result.returncode != 1:
-        if result.returncode == 2:
-            incomplete = INCOMPLETE_SCAN.search(
-                result.stderr.decode("utf-8", errors="replace")
-            )
-            if incomplete:
-                return block(
-                    kind,
-                    "secret-scanner: incomplete scan, "
-                    f"{incomplete.group(1)} oversized file(s) in the worktree; "
-                    "move large untracked files outside the repository.",
-                    event,
-                )
-        return block(kind, "secret-scanner failed; inspect the installed binary.", event)
+        return block(kind, scanner_failure_message(result), event)
     findings = result.stdout.decode("utf-8", errors="replace").splitlines()
     if not findings or any(not FINDING.fullmatch(line) for line in findings):
         return block(kind, "secret-scanner returned malformed findings.", event)

@@ -16,14 +16,16 @@ or repeatedly notify the agent for a binary elsewhere in the worktree. If the
 current structured tool wrote an identifiable binary file, its `PostToolUse`
 hook sends one notice without naming the file. The Git pre-commit and Forgejo
 gates still run at commit and push. An incomplete scan or execution error
-(exit `2`) remains a blocking hook error. An incomplete scan names its cause
-and remedy — `secret-scanner: incomplete scan, N oversized file(s) in the
-worktree; move large untracked files outside the repository.` — and never
-includes a path or scanned content. A file that is oversized but binary (a
-NUL in its first 8,192 bytes) is classified binary (exit `3`) rather than
-incomplete, so a large download left in a repository does not block commands.
-Any other exit `2` still reports `secret-scanner failed; inspect the
-installed binary.`
+(exit `2`) remains a blocking hook error. Known scanner errors name their cause
+and a safe next action without forwarding scanner stderr. An oversized
+worktree patch reports `Git patch exceeds scan byte limit`; inspect
+staged-then-deleted entries with `git status`, then unstage them before
+retrying. A 20 s timeout reports the untracked-file count and points at large
+untracked directories to move outside the repository. A file that is oversized
+but binary (a NUL in its first 8,192 bytes) is classified binary (exit `3`)
+rather than incomplete, so a large download left in a repository does not block
+commands. Any unknown exit `2` still reports `secret-scanner failed; inspect
+the installed binary.`
 
 Install a built Linux binary and merge the user-level hooks:
 
