@@ -1,3 +1,4 @@
 /target
 *.profraw
 benchmark-results.local.tsv
+__pycache__/

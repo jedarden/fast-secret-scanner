@@ -9,6 +9,12 @@ import unittest
 from unittest import mock
 
 
+# Keep test-driven blocks out of this host's real event log (and so out of
+# the fleet's central VictoriaLogs).
+_EVENT_LOG_DIR = tempfile.TemporaryDirectory(prefix="secret-scanner-test-events-")
+os.environ["SECRET_SCANNER_LOG_DIR"] = _EVENT_LOG_DIR.name
+
+
 HOOK = Path(__file__).resolve().parents[1] / "hooks/agent_hook.py"
 SPEC = importlib.util.spec_from_file_location("agent_hook", HOOK)
 assert SPEC and SPEC.loader

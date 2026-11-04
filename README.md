@@ -148,6 +148,7 @@ rule. This is evidence about that corpus, not a general recall estimate.
 | Integrating or changing the scanner | [`AGENTS.md`](AGENTS.md) |
 | Installing across Git and agent runtimes | [`docs/deploy-fleet.md`](docs/deploy-fleet.md) |
 | Agent hook behavior | [`docs/agent-hooks.md`](docs/agent-hooks.md) |
+| Finding hook, dispatcher and reconcile errors | [`docs/deploy-fleet.md#event-log`](docs/deploy-fleet.md#event-log) |
 | Understanding the implementation | [`notes/design.md`](notes/design.md) |
 | Auditing rules and known gaps | [`research/rule-coverage.md`](research/rule-coverage.md) |
 | Reproducing performance claims | [`research/gitleaks-performance.md`](research/gitleaks-performance.md) |

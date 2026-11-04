@@ -1,12 +1,40 @@
 #!/usr/bin/env python3
 """Translate redacted Rust findings into Codex and Claude Code hook decisions."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+
+
+def _load_event_log():
+    """The shared event log sits beside this hook. A missing or broken copy
+    disables logging, never scanning."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "secret_scanner_event_log", Path(__file__).resolve().with_name("scanlog.py")
+        )
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001
+        return None
+
+
+EVENT_LOG = _load_event_log()
+DETAILS = (
+    " Details: `secret-scanner-events tail` (~/.local/state/secret-scanner/events.jsonl)."
+    if EVENT_LOG is not None else ""
+)
+SLOW_SCAN_MS = 10_000
+# Facts about this invocation for the event log; never scanned content.
+SCAN: dict = {}
 
 
 FINDING = re.compile(r"^.+:[1-9][0-9]*:[a-z][a-z0-9-]*$")
@@ -52,6 +80,7 @@ def untracked_file_count(root: Path) -> int | None:
 
 def timeout_message(root: Path, scope: str) -> str:
     count = untracked_file_count(root)
+    SCAN.update(timed_out=True, scope=scope, untracked_files=count)
     if count is None:
         untracked = "the untracked-file count was unavailable"
     else:
@@ -59,7 +88,7 @@ def timeout_message(root: Path, scope: str) -> str:
     return (
         "secret-scanner timed out at its 20 s limit (20 seconds) while scanning "
         f"{scope}; {untracked}. Inspect large untracked directories and move "
-        "them outside the repository before retrying."
+        "them outside the repository before retrying." + DETAILS
     )
 
 
@@ -71,12 +100,26 @@ def scanner_failure_message(result) -> str:
             return (
                 "secret-scanner: incomplete scan, "
                 f"{incomplete.group(1)} oversized file(s) in the worktree; "
-                "move large untracked files outside the repository."
+                "move large untracked files outside the repository." + DETAILS
             )
         for marker, message in KNOWN_SCANNER_FAILURES.items():
             if marker in stderr:
-                return message
+                return message + DETAILS
+    if DETAILS:
+        return (
+            f"secret-scanner failed (exit {result.returncode}); its stderr is in "
+            "the event log." + DETAILS
+        )
     return "secret-scanner failed; inspect the installed binary."
+
+
+def note_scan(scope: str, result, started: float) -> None:
+    SCAN.update(
+        scope=scope,
+        scanner_rc=result.returncode,
+        stderr=result.stderr,
+        scan_ms=int((time.monotonic() - started) * 1000),
+    )
 
 
 def written_paths(event: dict, cwd: Path, root: Path) -> list[Path]:
@@ -107,6 +150,7 @@ def written_paths(event: dict, cwd: Path, root: Path) -> list[Path]:
 
 
 def decision(event: dict) -> dict:
+    SCAN.clear()
     kind = event.get("hook_event_name", "")
     if kind not in {"PreToolUse", "PostToolUse", "Stop"}:
         return {}
@@ -139,9 +183,11 @@ def decision(event: dict) -> dict:
         return {}  # There is no Git history to protect in this directory.
 
     root_path = Path(os.fsdecode(root.stdout.removesuffix(b"\n"))).resolve()
+    SCAN["repo"] = str(root_path)
     scanner = os.environ.get("SECRET_SCANNER_BIN") or str(
         Path.home() / ".local/bin/secret-scanner"
     )
+    started = time.monotonic()
     try:
         result = subprocess.run(
             [scanner, "--worktree"],
@@ -152,8 +198,10 @@ def decision(event: dict) -> dict:
         )
     except subprocess.TimeoutExpired:
         return block(kind, timeout_message(root_path, "the worktree"), event)
-    except OSError:
-        return block(kind, "secret-scanner could not execute the installed scanner binary.", event)
+    except OSError as error:
+        SCAN.update(scope="the worktree", exec_error=f"{type(error).__name__}: {error}")
+        return block(kind, "secret-scanner could not execute the installed scanner binary." + DETAILS, event)
+    note_scan("the worktree", result, started)
 
     if result.returncode in (0, 3) and kind == "PostToolUse":
         written_binary = False
@@ -162,6 +210,7 @@ def decision(event: dict) -> dict:
                 if path.stat().st_size > MAX_DIRECT_BYTES:
                     return block(kind, "secret-scanner could not scan an oversized written file.", event)
                 content = path.read_bytes()
+                started = time.monotonic()
                 direct = subprocess.run(
                     [scanner, "--stdin", "--path-label", "<written-file>"],
                     input=content,
@@ -171,15 +220,17 @@ def decision(event: dict) -> dict:
                 )
             except subprocess.TimeoutExpired:
                 return block(kind, timeout_message(root_path, "the written file"), event)
-            except OSError:
-                return block(kind, "secret-scanner could not execute the written-file scan.", event)
+            except OSError as error:
+                SCAN.update(scope="the written file", exec_error=f"{type(error).__name__}: {error}")
+                return block(kind, "secret-scanner could not execute the written-file scan." + DETAILS, event)
+            note_scan("the written file", direct, started)
             if direct.returncode == 1:
                 result = direct
                 break
             if direct.returncode == 3:
                 written_binary = True
             elif direct.returncode != 0:
-                return block(kind, "secret-scanner failed on a written file.", event)
+                return block(kind, "secret-scanner failed on a written file." + DETAILS, event)
         else:
             if written_binary:
                 return {"systemMessage": "secret-scanner could not inspect a binary file written by this tool; review it before committing. The Git and Forgejo secret gates still run."}
@@ -192,7 +243,9 @@ def decision(event: dict) -> dict:
         return block(kind, scanner_failure_message(result), event)
     findings = result.stdout.decode("utf-8", errors="replace").splitlines()
     if not findings or any(not FINDING.fullmatch(line) for line in findings):
-        return block(kind, "secret-scanner returned malformed findings.", event)
+        SCAN["malformed_lines"] = len(findings)
+        return block(kind, "secret-scanner returned malformed findings." + DETAILS, event)
+    SCAN["findings"] = findings
     locations = "\n".join(f"  {line}" for line in findings[:20])
     remainder = f"\n  ...and {len(findings) - 20} more" if len(findings) > 20 else ""
     guidance = (
@@ -214,6 +267,7 @@ def decision(event: dict) -> dict:
 
 
 def block(kind: str, message: str, event: dict) -> dict:
+    SCAN["block_message"] = message
     if kind == "Stop" and event.get("stop_hook_active") is True:
         return {"systemMessage": "secret-scanner findings remain after one Stop continuation; the Git gate still blocks commits."}
     if kind == "PreToolUse":
@@ -227,18 +281,73 @@ def block(kind: str, message: str, event: dict) -> dict:
     return {"decision": "block", "reason": message}
 
 
+def log_outcome(event: dict, output: dict, started: float) -> None:
+    """Record blocks, errors, warnings and slow scans; clean fast scans are not logged."""
+    if EVENT_LOG is None:
+        return
+    try:
+        elapsed = int((time.monotonic() - started) * 1000)
+        findings = SCAN.get("findings")
+        cause = SCAN.get("block_message")
+        if cause:
+            outcome = "blocked" if findings else "error"
+        elif output.get("systemMessage"):
+            outcome, cause = "warning", output["systemMessage"]
+        elif elapsed >= SLOW_SCAN_MS:
+            outcome = "slow"
+            cause = f"scan took {elapsed} ms of the {SCANNER_TIMEOUT_SECONDS} s limit"
+        else:
+            return
+        transcript = str(event.get("transcript_path") or "")
+        agent = ("codex" if "/.codex/" in transcript
+                 else "claude" if "/.claude/" in transcript else None)
+        # Every reason is generated text except a findings block, which lists
+        # repository paths; that and stderr are captured text and get
+        # re-scanned. A timeout block therefore spends no time on re-scanning.
+        reason = cause.replace(DETAILS, "") if cause else outcome
+        summary = reason.splitlines()[0]
+        EVENT_LOG.record(
+            "agent-hook", outcome, summary,
+            untrusted={"reason": reason if findings else None,
+                       "stderr": SCAN.get("stderr"), "findings": findings},
+            reason=None if findings else reason,
+            agent=agent,
+            hook_event=event.get("hook_event_name"),
+            tool=event.get("tool_name"),
+            session_id=event.get("session_id"),
+            cwd=event.get("cwd"),
+            repo=SCAN.get("repo"),
+            scope=SCAN.get("scope"),
+            scanner_rc=SCAN.get("scanner_rc"),
+            scan_ms=SCAN.get("scan_ms"),
+            duration_ms=elapsed,
+            timed_out=SCAN.get("timed_out"),
+            untracked_files=SCAN.get("untracked_files"),
+            exec_error=SCAN.get("exec_error"),
+            exception=SCAN.get("exception"),
+            malformed_lines=SCAN.get("malformed_lines"),
+            finding_count=len(findings) if findings else None,
+            rules=sorted({line.rsplit(":", 1)[-1] for line in findings}) if findings else None,
+            stop_continuation=event.get("stop_hook_active") is True or None,
+        )
+    except Exception:  # noqa: BLE001 -- the log must never change a decision
+        pass
+
+
 def main() -> int:
+    started = time.monotonic()
+    event: object = None
     try:
         event = json.load(sys.stdin)
         if not isinstance(event, dict):
             raise ValueError("hook event is not an object")
         output = decision(event)
-    except (ValueError, json.JSONDecodeError, OSError, subprocess.TimeoutExpired):
-        output = {
-            "decision": "block",
-            "reason": "secret-scanner hook input or Git inspection failed.",
-        }
-    print(json.dumps(output, separators=(",", ":")))
+    except (ValueError, json.JSONDecodeError, OSError, subprocess.TimeoutExpired) as error:
+        SCAN["exception"] = type(error).__name__
+        SCAN["block_message"] = "secret-scanner hook input or Git inspection failed." + DETAILS
+        output = {"decision": "block", "reason": SCAN["block_message"]}
+    print(json.dumps(output, separators=(",", ":")), flush=True)
+    log_outcome(event if isinstance(event, dict) else {}, output, started)
     return 0
 
 

@@ -8,17 +8,37 @@ root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 rust="${SECRET_SCANNER_BIN:-$HOME/.local/bin/secret-scanner}"
 
 if [ "$hook" = pre-commit ]; then
+  # Event log (hooks/scanlog.py): records blocks and failures with the
+  # scanner's stderr, which this hook otherwise never shows. Logging can
+  # never change the commit decision.
+  event_log="$HOME/.local/share/secret-scanner/scanlog.py"
+  started_ms="$(date +%s%3N 2>/dev/null || echo 0)"
+  log_event() { # outcome message [findings-file]
+    [ -f "$event_log" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 "$event_log" record --component git-pre-commit --outcome "$1" \
+      --message "$2" --field "repo=$root" --field "scanner_rc=${result:-127}" \
+      --field "duration_ms=$(( $(date +%s%3N 2>/dev/null || echo 0) - started_ms ))" \
+      --stderr-file "${errors:-/dev/null}" ${3:+--findings-file "$3"} \
+      >/dev/null 2>&1 || true
+  }
+  details=''
+  [ -f "$event_log" ] && details=' (details: secret-scanner-events tail)'
+
   if [ ! -x "$rust" ]; then
-    echo 'secret-scanner: runtime unavailable; commit blocked' >&2
+    log_event error "scanner binary missing or not executable: $rust"
+    echo "secret-scanner: runtime unavailable; commit blocked$details" >&2
     exit 1
   fi
   report="$(mktemp)" || exit 1
-  trap 'rm -f -- "$report"' EXIT
-  (cd "$root" && "$rust" --staged) >"$report" 2>/dev/null
+  errors="$(mktemp)" || { rm -f -- "$report"; exit 1; }
+  trap 'rm -f -- "$report" "$errors"' EXIT
+  (cd "$root" && "$rust" --staged) >"$report" 2>"$errors"
   result=$?
   case "$result" in
     0) ;;
     1)
+      log_event blocked "staged changes hold a possible secret" "$report"
       echo 'secret-scanner: possible secret in staged changes:' >&2
       sed -n '1,20p' "$report" >&2
       echo 'secret-scanner: remove the candidate, rotate it if live, then restage' >&2
@@ -32,7 +52,8 @@ if [ "$hook" = pre-commit ]; then
       echo 'secret-scanner: binary input skipped; continuing to the comprehensive Git hook' >&2
       ;;
     *)
-      echo 'secret-scanner: execution failed; commit blocked' >&2
+      log_event error "scanner exited $result on staged changes"
+      echo "secret-scanner: execution failed (exit $result); commit blocked$details" >&2
       exit 1
       ;;
   esac

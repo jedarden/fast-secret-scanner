@@ -11,6 +11,12 @@ import tempfile
 import unittest
 
 
+# Keep test-driven blocks out of this host's real event log (and so out of
+# the fleet's central VictoriaLogs).
+_EVENT_LOG_DIR = tempfile.TemporaryDirectory(prefix="secret-scanner-test-events-")
+os.environ["SECRET_SCANNER_LOG_DIR"] = _EVENT_LOG_DIR.name
+
+
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / "hooks/prewrite_hook.py"
 INSTALLER = ROOT / "scripts/install-prewrite-hooks.py"

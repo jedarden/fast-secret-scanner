@@ -82,7 +82,9 @@ systemctl --user status secret-scanner-reconcile.service
 The timer reapplies and verifies the canonical hook every 15 minutes; its
 first run should exit successfully before relying on it. `rollout.sh` skips
 unrecognized custom hooks and fails when an API request or hash check fails.
-Review failures with `journalctl --user -u secret-scanner-reconcile.service`.
+Each run's result, with the journal tail on failure, is in the [event log](#event-log)
+(`secret-scanner-events query --component reconcile`); the full output stays in
+`journalctl --user -u secret-scanner-reconcile.service`.
 The timer is eventual reconciliation. Forgejo's Git template adds a
 creation-time guard that rejects a new repository's content push until the
 canonical hook exists. A push-to-create attempt may leave an empty repository;
@@ -91,3 +93,57 @@ retry after the next successful timer run, or run
 running Forgejo container has `GIT_TEMPLATE_DIR` and canary both a rejected
 first push and a clean push after installation. This guard affects new repos;
 the complete existing-repo inventory remains a required rollout check.
+
+## Event log
+
+Every scanner component on a host appends to one file,
+`~/.local/state/secret-scanner/events.jsonl` (directory 0700, file 0600,
+rotated at 20 MiB to `events.jsonl.1`). A user timer ships new lines every
+2 minutes to the fleet VictoriaLogs on iad-ci
+(`https://victorialogs-iad-ci-ts.ardenone.com:8444`, tailnet only), so every
+host's errors are in one queryable place.
+
+```bash
+secret-scanner-events query --since 24h                  # all hosts, central
+secret-scanner-events query --since 7d --outcome error --host lab
+secret-scanner-events tail                               # this host, local file
+secret-scanner-events status                             # backlog and last ship
+```
+
+Use VictoriaLogs directly with LogsQL `_time:24h {source="secret-scanner"}`.
+`host`, `component` and `outcome` narrow the stream.
+
+| Component | Writer | Logged |
+|---|---|---|
+| `agent-hook` | `hooks/agent_hook.py` | blocks, errors (with scanner stderr), warnings, scans of 10 s or more |
+| `prewrite-hook` | `hooks/prewrite_hook.py` | every denial, scanner errors (with stderr), scans of 10 s or more |
+| `git-pre-commit` | `hooks/git-dispatch` | blocks (finding locations), scanner failures (with stderr), missing binary |
+| `reconcile` | `secret-scanner-reconcile.service` `ExecStopPost` | every run; journal tail on failure |
+| `event-log` | `scripts/install-event-log.py` | installation canaries |
+
+Clean scans under 10 s are not logged.
+
+Fields:
+- Always: `ts`, `host`, `component`, `outcome` (`blocked`, `denied`, `error`, `warning`, `slow`, `ok`) and `msg`.
+- When they apply: `repo`, `cwd`, `scanner_rc`, `scan_ms`, `duration_ms`, `agent`, `session_id`, `tool`, `hook_event`, `rules`, `finding_count`, `untracked_files`, `exec_error`, `stderr` and `findings`.
+
+**The log never holds scanned content.** Proposed writes, commands and matched bytes are never passed to it. Captured text (`stderr`, `findings`, the block `reason`, a journal tail) is scanned again before it is written. Text that matches a rule, or that cannot be scanned, is replaced with a `[withheld: ...]` marker. Logging errors are swallowed and never change a hook decision. Set `SECRET_SCANNER_LOG=off` to disable writing, `SECRET_SCANNER_LOG_DIR` to move the file, and `SECRET_SCANNER_LOG_URL` (or `off`) to change or stop shipping.
+
+The shipper keeps a byte cursor and the file's inode in `ship-cursor.json`. It POSTs only complete lines to `/insert/jsonline` and advances only after a 2xx. It finishes a rotated file before starting the new one. A failed run loses nothing; the next run retries. The VictoriaLogs IngressRoute (`declarative-config` `k8s/iad-ci/traefik/victorialogs-ingressroute.yml`) is host-matched, so inserts need no extra route.
+
+Install or refresh on each host from a checkout at the released commit:
+
+```bash
+python3 scripts/install-event-log.py            # dry run: lists every file it would touch
+python3 scripts/install-event-log.py --apply
+```
+
+The installer:
+- Installs `scanlog.py`, `~/.local/bin/secret-scanner-events` and the `secret-scanner-log-ship` timer.
+- Refreshes only components the host already has:
+  - the installed agent and pre-write hook helpers;
+  - the Git dispatcher at the active global `core.hooksPath`, when it is this project's dispatcher;
+  - the reconcile unit.
+- Never edits agent settings, Git configuration or which hooks run.
+- With `--apply`, records a canary event, ships it, and fails unless the canary is found centrally.
+
